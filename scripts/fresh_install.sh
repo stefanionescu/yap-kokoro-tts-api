@@ -55,8 +55,8 @@ source venv/bin/activate
 pip install -U pip "setuptools<70" wheel
 pip install --no-cache-dir -r requirements.txt
 
-echo "[install] Running setup.sh to create .env and defaults..."
-chmod +x setup.sh || true
-./setup.sh
+echo "[install] Running scripts/setup.sh to create .env and defaults..."
+chmod +x scripts/setup.sh || true
+bash scripts/setup.sh
 
 echo "[install] Done. Use ./start.sh to launch, or run the run_all.sh helper."
