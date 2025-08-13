@@ -5,10 +5,10 @@ python-dotenv==1.0.1
 # Numpy pinned to <2 to avoid ABI issues with compiled wheels in CUDA stacks
 numpy==1.26.4
 
-# PyTorch stack for vLLM 0.10.0 (CUDA 12.1 wheels)
-torch==2.5.1
-torchvision==0.20.1
-xformers==0.0.28.post3
+# PyTorch for vLLM 0.10.0 (matches vLLM requirement)
+torch==2.7.1
+# Optional perf extras (let users install a matching xformers/torchvision if needed)
+# torchvision and xformers are intentionally not pinned to avoid version conflicts
 
 # vLLM with DeepSpeed FP6/FP8 support
 vllm==0.10.0
