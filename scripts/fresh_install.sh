@@ -15,7 +15,20 @@ cd "$REPO_DIR"
 echo "[install] Copying current workspace repo contents if present (fallback)..."
 # If the code is already present where this script lives, copy everything there
 SRC_DIR=$(dirname "$(dirname "$(readlink -f "$0")")")
-rsync -a --exclude venv --exclude cache --exclude logs "$SRC_DIR/" "$REPO_DIR/"
+if command -v rsync >/dev/null 2>&1; then
+  rsync -a --exclude venv --exclude cache --exclude logs "$SRC_DIR/" "$REPO_DIR/"
+else
+  echo "[install] rsync not found, falling back to cp -a"
+  shopt -s dotglob
+  for p in "$SRC_DIR"/*; do
+    name=$(basename "$p")
+    if [[ "$name" == "venv" || "$name" == "cache" || "$name" == "logs" ]]; then
+      continue
+    fi
+    cp -a "$p" "$REPO_DIR/"
+  done
+  shopt -u dotglob
+fi
 
 echo "[install] Creating venv and installing dependencies..."
 python3 -m venv venv

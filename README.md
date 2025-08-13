@@ -1,97 +1,87 @@
 # Orpheus TTS Deployment
 
-A FastAPI-based deployment solution for [Canopy Labs' Orpheus 3B](https://huggingface.co/canopylabs/orpheus-3b-0.1-ft) text-to-speech model using vLLM with 6-bit quantization.
+FastAPI-based service for [Canopy Labs' Orpheus 3B](https://huggingface.co/canopylabs/orpheus-3b-0.1-ft) using vLLM with 6-bit (DeepSpeed FP6/FP8) quantization and SNAC decoding.
 
 ## Features
 
-- 🚀 **Optimized Performance**: Uses DeepSpeed FP6/FP8 quantization for maximum GPU efficiency
-- 🔊 **Low Latency**: Streams audio chunks with low Time-to-First-Byte (TTFB)
-- 👥 **Voice Options**: Supports both male (zac) and female (tara) voices with optimized parameters
-- 🔌 **API Integration**: RESTful and WebSocket interfaces for easy integration with pipecat
-- 📝 **Comprehensive Logging**: Detailed logging for monitoring and debugging
+- 🚀 Optimized performance with DeepSpeed FP6/FP8
+- 🔊 Low-latency PCM streaming (TTFB logged)
+- 🗣️ Voice selector via API: `female` or `male` (internally mapped to Tara/Zac)
+- 🔌 REST and WebSocket endpoints
+- 📝 Centralized logging
+
+## Prerequisites
+
+- Hugging Face token with access to `canopylabs/orpheus-3b-0.1-ft` (set `HF_TOKEN`)
 
 ## Quick Start
 
-1. **Setup the environment**:
+1) Setup
+```bash
+bash scripts/setup.sh
+```
 
-   ```bash
-   bash scripts/setup.sh
-   ```
+2) Start
+```bash
+bash scripts/start.sh
+```
 
-2. **Start the server**:
-
-   ```bash
-   bash scripts/start.sh
-   ```
-
-3. **Test the API**:
-
-   ```bash
-   curl -X POST http://localhost:8000/v1/audio/speech/stream \
-     -H "Content-Type: application/json" \
+3) Test
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech/stream \
+  -H "Content-Type: application/json" \
   -d '{"input":"Hello, this is a test of the Orpheus text-to-speech system.", "voice":"female"}' \
-     --output test.pcm
-   ```
+  --output test.pcm
 
-## API Documentation
+# male voice
+curl -X POST http://localhost:8000/v1/audio/speech/stream \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Testing male voice.", "voice":"male"}' \
+  --output test_male.pcm
+```
 
-Once the server is running, access the API documentation at:
+## API Docs
 
+Visit:
 ```
 http://localhost:8000/docs
 ```
 
-## Voice-Specific Settings
+## Voice Parameters
 
-The system is configured with optimal parameters for each voice:
+- female: temperature=0.8, top_p=0.8, repetition_penalty=1.9
+- male:   temperature=0.4, top_p=0.8, repetition_penalty=1.85
 
-### Female Voice (tara)
-- Temperature: 0.8
-- Top-p: 0.8
-- Repetition Penalty: 1.9
+## Long-form Settings
 
-### Male Voice (zac)
-- Temperature: 0.4  
-- Top-p: 0.8
-- Repetition Penalty: 1.85
-
-## Context Settings for Long Text
-
-For processing longer texts, the system uses:
-- Context Window (num_ctx): 8192 tokens
-- Max Prediction (num_predict): 49152 tokens
-- Extra tokens after end-of-text: 8192 tokens
+- num_ctx: 8192
+- num_predict: 49152
+- N_EXTRA_AFTER_EOT: 8192
 
 ## Deployment
 
-For detailed instructions on deploying to RunPod, see [DEPLOYMENT.md](DEPLOYMENT.md).
+See [RUNPOD_DEPLOYMENT.md](RUNPOD_DEPLOYMENT.md) for RunPod instructions and one-shot scripts.
 
-## Configuration
+## Configuration (.env)
 
-Configuration is managed through environment variables in the `.env` file. Key settings include:
-
-- `MODEL_NAME`: Path to the Orpheus model
-- `QUANTIZATION`: Quantization method (deepspeedfp for FP6/FP8 or awq for alternative 6-bit)
-- `GPU_MEMORY_UTILIZATION`: Fraction of GPU memory to use
-- `TEMPERATURE_TARA`, `TEMPERATURE_ZAC`, etc.: Voice-specific parameters
+- MODEL_NAME, QUANTIZATION (`deepspeedfp` or `awq`)
+- GPU_MEMORY_UTILIZATION, MAX_MODEL_LEN (default 8192)
+- NUM_CTX, NUM_PREDICT, MAX_TOKENS
+- HF_HOME (cache dir), HF_TOKEN (required for gated model)
 
 ## Components
 
-- `main.py`: FastAPI application with API endpoints
-- `src/vllm.py`: vLLM integration for optimized model inference
-- `src/decoder.py`: SNAC decoder for converting tokens to audio
-- `src/logger.py`: Centralized logging setup
+- `main.py` – FastAPI app and endpoints
+- `src/vllm.py` – vLLM integration (token gen + auth + quantization)
+- `src/decoder.py` – SNAC decoding to PCM
+- `src/logger.py` – centralized logging
 
 ## Requirements
 
-- Python 3.10+
-- PyTorch 2.1+
-- CUDA 11.8+
-- vLLM 0.3.3+
-- See `requirements.txt` for all dependencies
+See `requirements.txt` (tested with PyTorch 2.4.x cu121, vLLM 0.4.0).
 
 ## Acknowledgements
 
-- [Canopy Labs](https://canopylabs.ai/) for creating the Orpheus TTS model
-- [vLLM](https://github.com/vllm-project/vllm) for the efficient LLM inference engine
-- [SNAC](https://github.com/hubert-siuzdak/snac/) for the neural audio codec
+- [Canopy Labs](https://canopylabs.ai/) – Orpheus TTS
+- [vLLM](https://github.com/vllm-project/vllm)
+- [SNAC](https://github.com/hubert-siuzdak/snac/)
