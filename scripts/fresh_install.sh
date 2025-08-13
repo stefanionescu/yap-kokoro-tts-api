@@ -36,6 +36,12 @@ else
   (cd "$SRC_DIR" && tar --exclude='./venv' --exclude='./cache' --exclude='./logs' -cf - .) | (cd "$REPO_DIR" && tar -xf -)
 fi
 
+# Fallback guard: ensure files are present
+if [ ! -f "$REPO_DIR/requirements.txt" ]; then
+  echo "[install] requirements.txt missing after copy, falling back to cp -a"
+  cp -a "$SRC_DIR"/. "$REPO_DIR"/
+fi
+
 echo "[install] Creating venv and installing dependencies..."
 python3 -m venv venv
 source venv/bin/activate
@@ -47,5 +53,3 @@ chmod +x setup.sh || true
 ./setup.sh
 
 echo "[install] Done. Use ./start.sh to launch, or run the run_all.sh helper."
-
-
