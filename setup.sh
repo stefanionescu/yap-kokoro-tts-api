@@ -68,9 +68,10 @@ REP_PENALTY_ZAC=1.85
 NUM_CTX=8192
 NUM_PREDICT=49152
 
-# Sampling parameters
-MAX_TOKENS=2000
+# Sampling parameters - matching Ollama reference implementation
+MAX_TOKENS=49152
 STOP_TOKEN_IDS=128258
+N_EXTRA_AFTER_EOT=8192
 
 # HuggingFace cache directory (for model downloads)
 HF_HOME=$(pwd)/cache

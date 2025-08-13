@@ -79,10 +79,17 @@ This sends test requests to optimize performance.
 Test the API with a simple cURL request:
 
 ```bash
+# Using female voice
 curl -X POST http://localhost:8000/v1/audio/speech/stream \
   -H "Content-Type: application/json" \
-  -d '{"input":"This is a test of the Orpheus TTS system.", "voice":"tara"}' \
-  --output test.pcm
+  -d '{"input":"This is a test of the Orpheus TTS system.", "voice":"female"}' \
+  --output test_female.pcm
+
+# Using male voice
+curl -X POST http://localhost:8000/v1/audio/speech/stream \
+  -H "Content-Type: application/json" \
+  -d '{"input":"This is a test of the Orpheus TTS system.", "voice":"male"}' \
+  --output test_male.pcm
 ```
 
 ## 6. Making the API Accessible Externally
@@ -92,7 +99,9 @@ To access the API from outside RunPod:
 1. Make sure port 8000 is exposed in your RunPod configuration
 2. Use your RunPod's public IP address and the exposed port to access the API
 
-Example endpoint: `http://<your-pod-ip>:<exposed-port>/v1/audio/speech/stream`
+Example endpoint: `http://<your-pod-ip>:8000/v1/audio/speech/stream`
+
+**Important:** Ensure you add port 8000 to your RunPod HTTP Ports list in the pod configuration. Port 8888 is typically used for Jupyter Notebook.
 
 ## 7. Monitoring and Maintenance
 

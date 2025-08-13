@@ -37,7 +37,7 @@ def warmup_api(host="localhost", port=8000, save_audio=False):
     # Warmup requests for each voice
     test_text = "This is a warmup request to optimize the text-to-speech model performance."
     
-    for voice in ["tara", "zac"]:
+    for voice in ["female", "male"]:
         logger.info(f"Sending warmup request with voice '{voice}'...")
         try:
             start_time = time.time()

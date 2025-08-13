@@ -13,6 +13,7 @@ __pycache__/
 # Logs and output files
 logs/
 *.log
+*.zip
 
 # OS specific files
 .DS_Store

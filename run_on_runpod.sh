@@ -28,7 +28,7 @@ echo
 echo "Example API call:"
 echo "curl -X POST http://localhost:8000/v1/audio/speech/stream \\"
 echo "  -H \"Content-Type: application/json\" \\"
-echo "  -d '{\"input\":\"Hello world\", \"voice\":\"tara\"}' \\"
+echo "  -d '{\"input\":\"Hello world\", \"voice\":\"female\"}' \\"
 echo "  --output test.pcm"
 
 # Display server log tail

@@ -21,7 +21,8 @@ class OrpheusModel:
                  quantization="deepspeedfp"):
         self.model_name = model_name
         self.quantization = quantization
-        self.available_voices = ["tara", "zac"]  # Limiting to only needed voices
+        self.available_voices = ["female", "male"]  # API voice options
+        self._voice_mapping = {"female": "tara", "male": "zac"}  # Internal mapping to model voices
         self.max_model_len = max_model_len
         self.gpu_memory_utilization = gpu_memory_utilization
         self.max_num_batched_tokens = max_num_batched_tokens
@@ -75,9 +76,11 @@ class OrpheusModel:
                 logger.warning(f"Invalid voice: {voice}. Valid options are: {', '.join(self.available_voices)}")
                 raise ValueError(f"Voice {voice} is not available. Valid options are: {', '.join(self.available_voices)}")
     
-    def _format_prompt(self, prompt, voice="tara"):
-        logger.debug(f"Formatting prompt with voice: {voice}")
-        adapted_prompt = f"{voice}: {prompt}"
+    def _format_prompt(self, prompt, voice="female"):
+        # Map external voice name (female/male) to internal model voice name (tara/zac)
+        model_voice = self._voice_mapping.get(voice, "tara")
+        logger.debug(f"Formatting prompt with voice: {voice} (maps to model voice: {model_voice})")
+        adapted_prompt = f"{model_voice}: {prompt}"
         prompt_tokens = self.tokenizer(adapted_prompt, return_tensors="pt")
         start_token = torch.tensor([[ 128259]], dtype=torch.int64)
         end_tokens = torch.tensor([[128009, 128260, 128261, 128257]], dtype=torch.int64)
@@ -86,38 +89,44 @@ class OrpheusModel:
         return prompt_string
 
 
-    def generate_tokens_sync(self, prompt, voice=None, request_id="req-001", temperature=None, top_p=None, max_tokens=2000, stop_token_ids=[128258], repetition_penalty=None, num_ctx=8192, num_predict=49152):
-        """
-        Generate tokens synchronously from the model
+    def generate_tokens_sync(self, prompt, voice=None, request_id=None, temperature=None, top_p=None, max_tokens=49152, stop_token_ids=[128258], repetition_penalty=None, num_ctx=8192, num_predict=49152):
+        """Generate tokens synchronously from the model
         
         Args:
             prompt: The text prompt to convert to speech
-            voice: Voice to use (tara for female, zac for male)
-            request_id: Unique identifier for the request
+            voice: Voice to use ('female' or 'male')
+            request_id: Unique identifier for the request (if None, one will be generated)
             temperature: Sampling temperature (lower = more deterministic)
             top_p: Nucleus sampling parameter
-            max_tokens: Maximum number of tokens to generate
+            max_tokens: Maximum number of tokens to generate (default: 49152 to match Ollama)
             stop_token_ids: Token IDs to stop generation
             repetition_penalty: Penalty for repeating tokens
-            num_ctx: Context window size
-            num_predict: Maximum number of tokens to predict
+            num_ctx: Context window size (default: 8192)
+            num_predict: Maximum number of tokens to predict (default: 49152)
             
         Returns:
             Generator yielding tokens
         """
+        # Generate a unique request ID if none provided
+        if request_id is None:
+            import uuid
+            request_id = f"req-{str(uuid.uuid4())[:8]}"
         if voice not in self.available_voices:
-            logger.warning(f"Invalid voice: {voice}, defaulting to tara")
-            voice = "tara"
+            logger.warning(f"Invalid voice: {voice}, defaulting to female")
+            voice = "female"
+            
+        # Map external voice to internal model voice
+        model_voice = self._voice_mapping.get(voice, "tara")
         
         # Voice-specific parameters as specified by user
-        if voice == "tara":  # Female voice
+        if voice == "female":
             if temperature is None:
                 temperature = 0.80
             if top_p is None:
                 top_p = 0.80
             if repetition_penalty is None:
                 repetition_penalty = 1.90
-        else:  # "zac" - Male voice
+        else:  # "male" voice
             if temperature is None:
                 temperature = 0.4
             if top_p is None:
@@ -185,17 +194,26 @@ class OrpheusModel:
         
         Args:
             prompt: Text to convert to speech
-            voice: Voice to use
-            
+            voice: Voice to use ('female' or 'male')
+            **kwargs: Additional parameters for token generation:
+                - temperature: Controls randomness (default depends on voice)
+                - top_p: Nucleus sampling parameter (default: 0.8)
+                - repetition_penalty: Penalty for repeating tokens (default depends on voice) 
+                - num_ctx: Context window size (default: 8192)
+                - num_predict: Maximum number of tokens to predict (default: 49152)
+                
         Returns:
             Async generator yielding audio chunks
         """
         logger.debug(f"Starting async speech generation for prompt: '{prompt[:20]}...'")
         
-        # Handle N_EXTRA_AFTER_EOT for longer text generation
-        kwargs.setdefault('num_predict', 49152)  # Default to higher value for longer texts
+        # These match parameters in the Ollama implementation
+        kwargs.setdefault('max_tokens', 49152)   # Default to match Ollama's num_predict
+        kwargs.setdefault('num_ctx', 8192)       # Default context size
+        kwargs.setdefault('num_predict', 49152)  # Default prediction limit
         
         # Extra tokens to process after seeing the end-of-text marker
+        # This matches the N_EXTRA_AFTER_EOT value in the Ollama implementation
         N_EXTRA_AFTER_EOT = 8192
         logger.debug(f"Using N_EXTRA_AFTER_EOT={N_EXTRA_AFTER_EOT} to ensure all frames are processed")
         

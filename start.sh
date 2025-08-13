@@ -24,7 +24,7 @@ if [ -n "$TRANSFORMERS_OFFLINE" ]; then
     echo "Running in offline mode (TRANSFORMERS_OFFLINE=1)"
 fi
 
-# Configure server port (default: 8000)
+# Configure server port (default: 8000 for API)
 PORT=${PORT:-8000}
 HOST=${HOST:-"0.0.0.0"}
 
