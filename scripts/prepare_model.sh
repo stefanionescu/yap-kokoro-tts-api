@@ -79,6 +79,22 @@ for p in glob.glob(local_dir+"/**/config.json", recursive=True):
 print("[prepare_model] Patch complete; changed:", changed)
 PY
 
+# Also prepare SNAC locally to avoid online fetches
+python - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+token=os.getenv("HUGGING_FACE_HUB_TOKEN") or os.getenv("HF_TOKEN")
+snac_dir="/workspace/orpheus-tts/snac_model"
+snapshot_download(repo_id="hubertsiuzdak/snac_24khz", token=token,
+                  local_dir=snac_dir, local_dir_use_symlinks=False)
+print("[prepare_model] SNAC downloaded to", snac_dir)
+PY
+
+# Persist SNAC path
+if ! grep -q '^SNAC_MODEL_PATH=' .env 2>/dev/null; then
+  echo "SNAC_MODEL_PATH=/workspace/orpheus-tts/snac_model" >> .env
+fi
+
 # Persist env to use local model and offline mode
 if ! grep -q '^MODEL_NAME=' .env 2>/dev/null || [[ "${MODEL_NAME:-}" != "$MODEL_PATH_DEFAULT" ]]; then
   sed -i '/^MODEL_NAME=/d' .env || true

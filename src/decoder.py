@@ -8,7 +8,9 @@ import os
 import time
 from collections import deque
 
-model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").eval()
+import os
+snac_repo = os.getenv("SNAC_MODEL_PATH", "hubertsiuzdak/snac_24khz")
+model = SNAC.from_pretrained(snac_repo).eval()
 
 # Check if CUDA is available and set device accordingly
 snac_device = "cuda" if torch.cuda.is_available() else "cpu"
