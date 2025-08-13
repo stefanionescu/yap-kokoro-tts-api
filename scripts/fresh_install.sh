@@ -2,6 +2,10 @@
 set -euo pipefail
 
 REPO_DIR=/workspace/orpheus-tts
+# Resolve source repo dir BEFORE changing directories
+SCRIPT_PATH=$(readlink -f "$0")
+SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
+SRC_DIR=$(dirname "$SCRIPT_DIR")
 
 if [ -z "${HF_TOKEN:-}" ]; then
   echo "[install] Warning: HF_TOKEN is not set. Set it to access gated models."
@@ -14,7 +18,6 @@ cd "$REPO_DIR"
 
 echo "[install] Materializing project into $REPO_DIR..."
 # Prefer git clone (most robust), fallback to tar copy
-SRC_DIR=$(dirname "$(dirname "$(readlink -f "$0")")")
 if [ -d "$SRC_DIR/.git" ] && command -v git >/dev/null 2>&1; then
   set +e
   REMOTE_URL=$(git -C "$SRC_DIR" config --get remote.origin.url)
@@ -33,13 +36,17 @@ if [ -d "$SRC_DIR/.git" ] && command -v git >/dev/null 2>&1; then
   fi
 else
   echo "[install] Copying via tar (no git detected)"
-  (cd "$SRC_DIR" && tar --exclude='./venv' --exclude='./cache' --exclude='./logs' -cf - .) | (cd "$REPO_DIR" && tar -xf -)
+  (cd "$SRC_DIR" && tar --exclude='./venv' --exclude='./cache' --exclude='./logs' -cf - .) | (tar -xf - -C "$REPO_DIR")
 fi
 
 # Fallback guard: ensure files are present
 if [ ! -f "$REPO_DIR/requirements.txt" ]; then
   echo "[install] requirements.txt missing after copy, falling back to cp -a"
-  cp -a "$SRC_DIR"/. "$REPO_DIR"/
+  if [ "$SRC_DIR" = "$REPO_DIR" ]; then
+    echo "[install] SRC_DIR equals REPO_DIR; skipping cp to avoid self-copy."
+  else
+    cp -a "$SRC_DIR"/. "$REPO_DIR"/
+  fi
 fi
 
 echo "[install] Creating venv and installing dependencies..."
