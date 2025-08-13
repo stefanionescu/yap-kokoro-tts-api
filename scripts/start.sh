@@ -55,6 +55,9 @@ if [ -z "${HF_HOME:-}" ]; then
     export HF_HOME="$ROOT_DIR/cache"
 fi
 
+# Prepare local model snapshot (downloads only inference files and removes rope_scaling)
+bash "$SCRIPT_DIR/prepare_model.sh"
+
 uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1
 
 

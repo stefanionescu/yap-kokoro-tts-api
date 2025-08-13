@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class OrpheusModel:
     def __init__(self, model_name="canopylabs/orpheus-3b-0.1-ft", 
                  tokenizer=None, 
-                 max_model_len=8192, 
+                 max_model_len=None, 
                  gpu_memory_utilization=0.9, 
                  max_num_batched_tokens=8192, 
                  max_num_seqs=4, 
@@ -23,7 +23,9 @@ class OrpheusModel:
         self.quantization = quantization
         self.available_voices = ["female", "male"]  # API voice options
         self._voice_mapping = {"female": "tara", "male": "zac"}  # Internal mapping to model voices
-        self.max_model_len = max_model_len
+        # Prefer env overrides to avoid config conflicts
+        env_max_len = os.getenv("TRT_MAX_SEQ_LEN") or os.getenv("MAX_MODEL_LEN")
+        self.max_model_len = int(env_max_len) if env_max_len else (max_model_len or 8192)
         self.gpu_memory_utilization = gpu_memory_utilization
         self.max_num_batched_tokens = max_num_batched_tokens
         self.max_num_seqs = max_num_seqs
