@@ -5,10 +5,10 @@ python-dotenv==1.0.1
 # Numpy pinned to <2 to avoid ABI issues with compiled wheels in CUDA stacks
 numpy==1.26.4
 
-# PyTorch stack (let pip resolve proper CUDA wheel; prefer 2.4.x for vLLM 0.4.x)
-torch>=2.4.1,<2.5
-torchvision>=0.19.0,<0.20
-xformers==0.0.28.post3
+# PyTorch stack pinned to a compatible set for CUDA 12.1 and vLLM 0.4.x
+torch==2.4.1
+torchvision==0.19.1
+xformers==0.0.27.post2
 
 # vLLM with DeepSpeed FP6/FP8 support
 vllm==0.4.0
