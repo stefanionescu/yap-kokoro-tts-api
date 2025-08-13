@@ -73,6 +73,34 @@ class OrpheusModel:
             logger.info(f"vLLM engine args: model={self.model_name}, quantization={self.quantization}, max_model_len={self.max_model_len}")
             return AsyncLLMEngine.from_engine_args(engine_args)
         except Exception as e:
+            msg = str(e)
+            # Auto-fallback if quantization unsupported or missing configs
+            if self.quantization and (
+                "Unknown quantization method" in msg or
+                "Cannot find the config file for" in msg
+            ):
+                logger.warning(
+                    f"Quantization '{self.quantization}' failed ('{msg}'). Falling back to non-quantized weights."
+                )
+                try:
+                    engine_args = AsyncEngineArgs(
+                        model=self.model_name,
+                        quantization=None,
+                        max_model_len=self.max_model_len,
+                        gpu_memory_utilization=self.gpu_memory_utilization,
+                        max_num_batched_tokens=self.max_num_batched_tokens,
+                        max_num_seqs=self.max_num_seqs,
+                        enable_chunked_prefill=self.enable_chunked_prefill,
+                        trust_remote_code=True,
+                        tokenizer_mode="auto",
+                        download_dir=os.getenv("HF_HOME"),
+                        enforce_eager=True,
+                    )
+                    logger.info("Retrying vLLM init without quantization")
+                    return AsyncLLMEngine.from_engine_args(engine_args)
+                except Exception:
+                    logger.exception("Fallback init without quantization failed")
+                    raise
             logger.error(f"Failed to initialize vLLM engine: {e}")
             raise
     

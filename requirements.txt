@@ -5,13 +5,13 @@ python-dotenv==1.0.1
 # Numpy pinned to <2 to avoid ABI issues with compiled wheels in CUDA stacks
 numpy==1.26.4
 
-# PyTorch stack pinned to match vLLM 0.4.0 (CUDA 12.1 wheels)
-torch==2.1.2
-torchvision==0.16.2
-xformers==0.0.23.post1
+# PyTorch stack (CUDA 12.1 wheels) compatible with newer vLLM and deepspeedfp
+torch==2.4.1
+torchvision==0.19.1
+xformers==0.0.28.post3
 
 # vLLM with DeepSpeed FP6/FP8 support
-vllm==0.4.0
+vllm==0.4.4
 
 # Transformers + vision extras
 transformers==4.55.1
@@ -29,4 +29,4 @@ tqdm==4.66.2
 websockets==12.0
 
 # DeepSpeed runtime for deepspeedfp quantization
-deepspeed>=0.11.0
+deepspeed>=0.17.0

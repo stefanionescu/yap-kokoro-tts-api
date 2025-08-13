@@ -25,14 +25,18 @@ mkdir -p logs cache
 echo "Setting up environment variables..."
 echo ""
 echo "Select quantization method:"
-echo "1) DeepSpeed FP6/FP8 (recommended for L40S GPU, higher performance)"
-echo "2) AWQ (alternative 6-bit quantization)"
-read -p "Enter choice [1-2] (default: 1): " quant_choice
+echo "1) DeepSpeed FP6/FP8 (deepspeedfp)"
+echo "2) AWQ (6-bit)"
+echo "3) GPTQ"
+echo "4) SqueezeLLM"
+echo "5) Marlin"
+read -p "Enter choice [1-5] (default: 1): " quant_choice
 case $quant_choice in
-    2)
-        QUANT_METHOD="awq"; echo "Selected AWQ quantization";;
-    *)
-        QUANT_METHOD="deepspeedfp"; echo "Selected DeepSpeed FP6/FP8 quantization (default)";;
+    2) QUANT_METHOD="awq"; echo "Selected AWQ";;
+    3) QUANT_METHOD="gptq"; echo "Selected GPTQ";;
+    4) QUANT_METHOD="squeezellm"; echo "Selected SqueezeLLM";;
+    5) QUANT_METHOD="marlin"; echo "Selected Marlin";;
+    *) QUANT_METHOD="deepspeedfp"; echo "Selected DeepSpeed FP6/FP8 (default)";;
 esac
 echo ""
 
