@@ -42,8 +42,17 @@ echo " - tara (female): temperature=$TEMPERATURE_TARA, top_p=$TOP_P, repetition_
 echo " - zac (male): temperature=$TEMPERATURE_ZAC, top_p=$TOP_P, repetition_penalty=$REP_PENALTY_ZAC"
 echo "Context window: $NUM_CTX, Max prediction: $NUM_PREDICT"
 
-if [ -n "$HF_TOKEN" ]; then
+# Export HF tokens for gated models
+if [ -n "$HUGGING_FACE_HUB_TOKEN" ]; then
+    export HUGGING_FACE_HUB_TOKEN
+elif [ -n "$HF_TOKEN" ]; then
     export HF_TOKEN
+    export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+fi
+
+# Ensure HF_HOME is set to volume cache
+if [ -z "${HF_HOME:-}" ]; then
+    export HF_HOME="$ROOT_DIR/cache"
 fi
 
 uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1

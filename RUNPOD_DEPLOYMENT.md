@@ -154,3 +154,39 @@ kill <process_id>
 
 1. Check if the API server is running
 2. Ensure the correct host and port with: `python warmup.py --host <host> --port <port>`
+
+## 9. Gated Model Setup (Hugging Face Token)
+
+This model is gated. You must both accept access and provide a token.
+
+1) Accept access on the model page:
+   - https://huggingface.co/canopylabs/orpheus-3b-0.1-ft
+
+2) Create a token:
+   - https://huggingface.co/settings/tokens
+
+3) On the pod, set the token and cache location:
+```bash
+cd /workspace/orpheus-tts
+export HF_TOKEN=hf_xxx
+export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+export HF_HOME=/workspace/orpheus-tts/cache
+echo "HUGGING_FACE_HUB_TOKEN=$HUGGING_FACE_HUB_TOKEN" >> .env
+echo "HF_HOME=$HF_HOME" >> .env
+```
+
+4) Quick verification in venv:
+```bash
+source venv/bin/activate
+python - <<'PY'
+from huggingface_hub import HfApi
+import os
+api = HfApi(token=os.environ["HUGGING_FACE_HUB_TOKEN"])
+print(api.model_info("canopylabs/orpheus-3b-0.1-ft").sha)
+PY
+```
+
+5) Start the server:
+```bash
+bash scripts/start.sh &
+```

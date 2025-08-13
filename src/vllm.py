@@ -54,7 +54,6 @@ class OrpheusModel:
         logger.info("Setting up vLLM engine")
         try:
             # Extended context window to match the user's requirements
-            auth_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
             engine_args = AsyncEngineArgs(
                 model=self.model_name,
                 quantization=self.quantization,  # Using DeepSpeed FP6/FP8 quantization
@@ -68,7 +67,6 @@ class OrpheusModel:
                 tokenizer_mode="auto",
                 download_dir=os.getenv("HF_HOME"),
                 enforce_eager=True,
-                hf_token=auth_token,
             )
             logger.info(f"vLLM engine args: model={self.model_name}, quantization={self.quantization}, max_model_len={self.max_model_len}")
             return AsyncLLMEngine.from_engine_args(engine_args)
