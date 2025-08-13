@@ -38,13 +38,14 @@ class OrpheusModel:
         logger.info("OrpheusModel initialization complete")
 
     def _load_tokenizer(self, tokenizer_path):
-        """Load tokenizer from local path or HuggingFace hub"""
+        """Load tokenizer from local path or HuggingFace hub with optional auth."""
         logger.info(f"Loading tokenizer from {tokenizer_path}")
         try:
+            auth_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
             if os.path.isdir(tokenizer_path):
-                return AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=True)
+                return AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=True, use_auth_token=auth_token)
             else:
-                return AutoTokenizer.from_pretrained(tokenizer_path)
+                return AutoTokenizer.from_pretrained(tokenizer_path, use_auth_token=auth_token)
         except Exception as e:
             logger.error(f"Failed to load tokenizer: {e}")
             raise
@@ -53,6 +54,7 @@ class OrpheusModel:
         logger.info("Setting up vLLM engine")
         try:
             # Extended context window to match the user's requirements
+            auth_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
             engine_args = AsyncEngineArgs(
                 model=self.model_name,
                 quantization=self.quantization,  # Using DeepSpeed FP6/FP8 quantization
@@ -61,8 +63,12 @@ class OrpheusModel:
                 max_num_batched_tokens=self.max_num_batched_tokens,
                 max_num_seqs=self.max_num_seqs,
                 enable_chunked_prefill=self.enable_chunked_prefill,
-                # Set extended context window for larger text processing
-                max_context_len_to_capture=8192,  # Same as num_ctx in the user's code
+                # Auth for gated HF models
+                trust_remote_code=True,
+                tokenizer_mode="auto",
+                download_dir=os.getenv("HF_HOME"),
+                enforce_eager=True,
+                hf_token=auth_token,
             )
             logger.info(f"vLLM engine args: model={self.model_name}, quantization={self.quantization}, max_model_len={self.max_model_len}")
             return AsyncLLMEngine.from_engine_args(engine_args)

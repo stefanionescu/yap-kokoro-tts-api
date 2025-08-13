@@ -75,6 +75,11 @@ N_EXTRA_AFTER_EOT=8192
 
 # HuggingFace cache directory (for model downloads)
 HF_HOME=$(pwd)/cache
+
+# Hugging Face auth token for gated models (set before running start.sh)
+# Get one from https://huggingface.co/settings/tokens and paste below or
+# export HF_TOKEN in the shell environment.
+HF_TOKEN=
 EOL
 
 echo "Setup complete! You can now run start.sh to launch the API server."

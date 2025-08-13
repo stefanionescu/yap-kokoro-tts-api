@@ -40,5 +40,10 @@ echo " - tara (female): temperature=$TEMPERATURE_TARA, top_p=$TOP_P, repetition_
 echo " - zac (male): temperature=$TEMPERATURE_ZAC, top_p=$TOP_P, repetition_penalty=$REP_PENALTY_ZAC"
 echo "Context window: $NUM_CTX, Max prediction: $NUM_PREDICT"
 
+# Export HF token if provided in .env
+if [ -n "$HF_TOKEN" ]; then
+    export HF_TOKEN
+fi
+
 # Start the server
 uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1
