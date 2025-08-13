@@ -12,11 +12,11 @@ source .env || true
 MODEL_PATH_DEFAULT="/workspace/orpheus-tts/model"
 HF_REPO=${MODEL_NAME:-canopylabs/orpheus-3b-0.1-ft}
 
-# If MODEL_NAME is already a local directory, nothing to do
-if [[ -d "$HF_REPO" ]]; then
-  echo "[prepare_model] Local model directory detected: $HF_REPO"
-  exit 0
-fi
+# Temporarily force online mode for downloads
+PREV_HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}
+PREV_TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-}
+unset HF_HUB_OFFLINE
+export TRANSFORMERS_OFFLINE=0
 
 echo "[prepare_model] Preparing local snapshot for $HF_REPO"
 
@@ -25,6 +25,7 @@ if [[ -z "${VIRTUAL_ENV:-}" ]]; then
   source venv/bin/activate
 fi
 
+if [[ ! -d "$HF_REPO" ]]; then
 python - <<'PY'
 import os
 from huggingface_hub import snapshot_download
@@ -57,6 +58,9 @@ snapshot_download(repo_id=repo, token=token, local_dir=local_dir,
                   allow_patterns=allow, ignore_patterns=ignore)
 print("[prepare_model] Downloaded only inference files to", local_dir)
 PY
+else
+  echo "[prepare_model] Local model directory detected: $HF_REPO"
+fi
 
 # Patch/normalize rope_scaling by removing it (not needed for 8k)
 python - <<'PY'
@@ -79,7 +83,7 @@ for p in glob.glob(local_dir+"/**/config.json", recursive=True):
 print("[prepare_model] Patch complete; changed:", changed)
 PY
 
-# Also prepare SNAC locally to avoid online fetches
+# Also prepare SNAC locally to avoid online fetches (always attempt; idempotent)
 python - <<'PY'
 import os
 from huggingface_hub import snapshot_download
@@ -101,9 +105,14 @@ if ! grep -q '^MODEL_NAME=' .env 2>/dev/null || [[ "${MODEL_NAME:-}" != "$MODEL_
   echo "MODEL_NAME=$MODEL_PATH_DEFAULT" >> .env
 fi
 
-if ! grep -q '^TRANSFORMERS_OFFLINE=' .env 2>/dev/null; then
-  echo "TRANSFORMERS_OFFLINE=1" >> .env
-fi
+# Restore offline mode and persist
+export TRANSFORMERS_OFFLINE=1
+sed -i '/^TRANSFORMERS_OFFLINE=/d' .env || true
+echo "TRANSFORMERS_OFFLINE=1" >> .env
+
+# Restore previous HF_HUB_OFFLINE if it existed
+if [[ -n "$PREV_HF_HUB_OFFLINE" ]]; then export HF_HUB_OFFLINE=$PREV_HF_HUB_OFFLINE; else unset HF_HUB_OFFLINE; fi
+if [[ -n "$PREV_TRANSFORMERS_OFFLINE" ]]; then export TRANSFORMERS_OFFLINE=$PREV_TRANSFORMERS_OFFLINE; fi
 
 echo "[prepare_model] MODEL_NAME set to $MODEL_PATH_DEFAULT and offline mode enabled."
 
