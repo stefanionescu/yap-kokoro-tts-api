@@ -15,13 +15,13 @@ A FastAPI-based deployment solution for [Canopy Labs' Orpheus 3B](https://huggin
 1. **Setup the environment**:
 
    ```bash
-   ./setup.sh
+   bash scripts/setup.sh
    ```
 
 2. **Start the server**:
 
    ```bash
-   ./start.sh
+   bash scripts/start.sh
    ```
 
 3. **Test the API**:
@@ -29,7 +29,7 @@ A FastAPI-based deployment solution for [Canopy Labs' Orpheus 3B](https://huggin
    ```bash
    curl -X POST http://localhost:8000/v1/audio/speech/stream \
      -H "Content-Type: application/json" \
-     -d '{"input":"Hello, this is a test of the Orpheus text-to-speech system.", "voice":"tara"}' \
+  -d '{"input":"Hello, this is a test of the Orpheus text-to-speech system.", "voice":"female"}' \
      --output test.pcm
    ```
 

@@ -6,14 +6,14 @@ from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
 from transformers import AutoTokenizer
 import threading
 import queue
-from decoder import tokens_decoder_sync
+from src.decoder import tokens_decoder_sync
 
 logger = logging.getLogger(__name__)
 
 class OrpheusModel:
     def __init__(self, model_name="canopylabs/orpheus-3b-0.1-ft", 
                  tokenizer=None, 
-                 max_model_len=2048, 
+                 max_model_len=8192, 
                  gpu_memory_utilization=0.9, 
                  max_num_batched_tokens=8192, 
                  max_num_seqs=4, 

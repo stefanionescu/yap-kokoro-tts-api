@@ -29,11 +29,10 @@ cd /path/to/yap-voice-model-deployment
 
 ## 3. Quick Deployment
 
-For a simple one-command deployment, use the provided `run_on_runpod.sh` script:
+For a simple one-command deployment, use the provided `scripts/run_on_runpod.sh` script:
 
 ```bash
-chmod +x run_on_runpod.sh
-./run_on_runpod.sh
+bash scripts/run_on_runpod.sh
 ```
 
 This script will:
@@ -50,8 +49,7 @@ If you prefer to run each step manually:
 ### 4.1. Set Up Environment
 
 ```bash
-chmod +x setup.sh
-./setup.sh
+bash scripts/setup.sh
 ```
 
 When prompted, select option 1 for DeepSpeed FP6/FP8 quantization (recommended for L40S GPUs).
@@ -59,8 +57,7 @@ When prompted, select option 1 for DeepSpeed FP6/FP8 quantization (recommended f
 ### 4.2. Start the API Server
 
 ```bash
-chmod +x start.sh
-./start.sh
+bash scripts/start.sh
 ```
 
 Wait until you see output indicating the server is running.
@@ -68,7 +65,7 @@ Wait until you see output indicating the server is running.
 ### 4.3. Warm Up the Model (in a separate terminal)
 
 ```bash
-chmod +x warmup.py
+source venv/bin/activate
 python warmup.py --save
 ```
 
