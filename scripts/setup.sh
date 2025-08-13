@@ -1,32 +1,28 @@
 #!/bin/bash
 set -e
 
-# Setup script for Orpheus TTS on RunPod with vLLM and 6-bit quantization
+# Always execute from repo root
+SCRIPT_DIR=$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(dirname "$SCRIPT_DIR")
+cd "$ROOT_DIR"
+
 echo "Setting up Orpheus TTS deployment environment..."
 
-# Update and install system packages
 echo "Updating system packages..."
 apt-get update
 apt-get install -y libsndfile1 ffmpeg libopenmpi-dev python3-venv nano htop
 
-# Create and activate Python virtual environment
 echo "Creating virtual environment..."
 python3 -m venv venv
 source venv/bin/activate
 
-# Install Python dependencies
 echo "Installing Python dependencies..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Create necessary directories
-mkdir -p logs
-mkdir -p cache
+mkdir -p logs cache
 
-# Set environment variables
 echo "Setting up environment variables..."
-
-# Choose quantization method
 echo ""
 echo "Select quantization method:"
 echo "1) DeepSpeed FP6/FP8 (recommended for L40S GPU, higher performance)"
@@ -34,13 +30,9 @@ echo "2) AWQ (alternative 6-bit quantization)"
 read -p "Enter choice [1-2] (default: 1): " quant_choice
 case $quant_choice in
     2)
-        QUANT_METHOD="awq"
-        echo "Selected AWQ quantization"
-        ;;
+        QUANT_METHOD="awq"; echo "Selected AWQ quantization";;
     *)
-        QUANT_METHOD="deepspeedfp"
-        echo "Selected DeepSpeed FP6/FP8 quantization (default)"
-        ;;
+        QUANT_METHOD="deepspeedfp"; echo "Selected DeepSpeed FP6/FP8 quantization (default)";;
 esac
 echo ""
 
@@ -74,7 +66,7 @@ STOP_TOKEN_IDS=128258
 N_EXTRA_AFTER_EOT=8192
 
 # HuggingFace cache directory (for model downloads)
-HF_HOME=$(pwd)/cache
+HF_HOME=
 
 # Hugging Face auth token for gated models (set before running start.sh)
 # Get one from https://huggingface.co/settings/tokens and paste below or
@@ -82,4 +74,6 @@ HF_HOME=$(pwd)/cache
 HF_TOKEN=
 EOL
 
-echo "Setup complete! You can now run start.sh to launch the API server."
+echo "Setup complete! You can now run scripts/start.sh to launch the API server."
+
+
