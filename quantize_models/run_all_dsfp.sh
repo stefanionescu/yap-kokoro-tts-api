@@ -89,14 +89,25 @@ EXPORT_DIR=${EXPORT_DIR:-./dsfp_model}
 echo "[run_all_dsfp] Step 1: Fetch base FP model -> $FETCH_DIR"
 OUT_DIR="$FETCH_DIR" python 01_fetch.py
 
-echo "[run_all_dsfp] Ensuring llm-compressor is installed..."
-if ! python - <<'PY'
-import importlib.util
-exit(0 if importlib.util.find_spec('llmcompressor') else 1)
-PY
-then
-  echo "[run_all_dsfp] Installing llm-compressor from GitHub..." >&2
-  python -m pip install --no-cache-dir -U git+https://github.com/vllm-project/llm-compressor.git
+echo "[run_all_dsfp] Ensuring llm-compressor is available (vendored)..."
+VENDOR_ROOT="$SCRIPT_DIR/vendor"
+VENDOR_REPO="$VENDOR_ROOT/llm-compressor"
+mkdir -p "$VENDOR_ROOT"
+if [[ ! -d "$VENDOR_REPO/.git" ]]; then
+  echo "[run_all_dsfp] Cloning llm-compressor -> $VENDOR_REPO" >&2
+  git clone --depth=1 https://github.com/vllm-project/llm-compressor.git "$VENDOR_REPO"
+else
+  echo "[run_all_dsfp] Updating llm-compressor vendor..." >&2
+  git -C "$VENDOR_REPO" fetch --depth=1 origin
+  git -C "$VENDOR_REPO" reset --hard origin/HEAD
+fi
+python -m pip install --no-cache-dir -e "$VENDOR_REPO"
+
+# Prefer vendored exporter script path
+if [[ -f "$VENDOR_REPO/llmcompressor/export/deepspeedfp.py" ]]; then
+  export DSFP_EXPORT_CMD="python $VENDOR_REPO/llmcompressor/export/deepspeedfp.py"
+elif [[ -f "$VENDOR_REPO/llmcompressor/scripts/export/deepspeedfp.py" ]]; then
+  export DSFP_EXPORT_CMD="python $VENDOR_REPO/llmcompressor/scripts/export/deepspeedfp.py"
 fi
 
 echo "[run_all_dsfp] Step 2: Export DeepSpeedFP (FP6) weights -> $EXPORT_DIR"
