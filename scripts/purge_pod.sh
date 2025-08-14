@@ -1,11 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+WORK=/workspace
+SCRIPT_PATH=$(readlink -f "$0")
+SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
+REPO_DIR=$(dirname "$SCRIPT_DIR")
+
 echo "[purge] Stopping running servers and processes (if any)..."
 
 # Stop background server by PID if present
-if [ -f "$(dirname "$SCRIPT_PATH")/../server.pid" ]; then
-  PID_FILE="$(dirname "$SCRIPT_PATH")/../server.pid"
+PID_FILE="$REPO_DIR/server.pid"
+if [ -f "$PID_FILE" ]; then
   if [ -s "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE" 2>/dev/null || true)
     if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then
@@ -32,10 +37,7 @@ pkill -f start_bg.sh || true
 tmux kill-server || true
 screen -ls | awk '/Detached|Attached/ {print $1}' | xargs -r -n1 screen -S || true
 
-WORK=/workspace
-SCRIPT_PATH=$(readlink -f "$0")
-SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
-REPO_DIR=$(dirname "$SCRIPT_DIR")
+# (paths already set above)
 
 # Args: --delete-repo (remove repo) | --kill-jupyter (also stop Jupyter)
 DELETE_REPO=false
