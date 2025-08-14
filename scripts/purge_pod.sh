@@ -1,8 +1,37 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "[purge] Stopping running servers (if any)..."
+echo "[purge] Stopping running servers and processes (if any)..."
+
+# Stop background server by PID if present
+if [ -f "$(dirname "$SCRIPT_PATH")/../server.pid" ]; then
+  PID_FILE="$(dirname "$SCRIPT_PATH")/../server.pid"
+  if [ -s "$PID_FILE" ]; then
+    PID=$(cat "$PID_FILE" 2>/dev/null || true)
+    if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then
+      kill "$PID" || true
+      sleep 1
+      kill -9 "$PID" || true
+      echo "[purge] Killed server PID $PID"
+    fi
+  fi
+  rm -f "$PID_FILE"
+fi
+
+# Broad kill of common processes
 pkill -f uvicorn || true
+pkill -f "python .*main.py" || true
+pkill -f "python -m vllm" || true
+pkill -f vllm || true
+pkill -f ray || true
+pkill -f jupyter || true
+pkill -f gunicorn || true
+pkill -f start.sh || true
+pkill -f start_bg.sh || true
+
+# Kill tmux/screen sessions if any
+tmux kill-server || true
+screen -ls | awk '/Detached|Attached/ {print $1}' | xargs -r -n1 screen -S || true
 
 WORK=/workspace
 SCRIPT_PATH=$(readlink -f "$0")
@@ -22,6 +51,9 @@ rm -rf \
   "$REPO_DIR/snac_model" \
   "$REPO_DIR/cache" \
   "$REPO_DIR/logs" \
+  "$REPO_DIR/server.log" \
+  "$REPO_DIR/server.pid" \
+  "$REPO_DIR/warmup_audio" \
   "$WORK/.cache/huggingface" \
   "$WORK/hf" \
   "$HOME/.cache/huggingface" \
@@ -62,6 +94,26 @@ rm -f /usr/local/bin/uvicorn /usr/local/bin/ray /usr/local/bin/transformers-cli 
 
 # Final cache sweep
 rm -rf ~/.cache/pip /root/.cache/pip /tmp/* || true
+
+echo "[purge] Attempting to kill any remaining GPU processes..."
+if command -v nvidia-smi >/dev/null 2>&1; then
+  nvidia-smi || true
+  PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr '\n' ' ')
+  if [ -n "$PIDS" ]; then
+    echo "[purge] Killing GPU PIDs: $PIDS"
+    for p in $PIDS; do kill -9 "$p" 2>/dev/null || true; done
+  else
+    echo "[purge] No GPU compute processes reported by nvidia-smi"
+  fi
+
+  echo "[purge] Resetting GPU (if idle)..."
+  nvidia-smi -pm 0 || true
+  nvidia-smi --gpu-reset -i 0 || true
+  nvidia-smi -pm 1 || true
+  nvidia-smi || true
+else
+  echo "[purge] nvidia-smi not found; skipping GPU reset"
+fi
 
 echo "[purge] Disk usage after purge:"
 df -h || true
