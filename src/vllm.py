@@ -56,9 +56,11 @@ class OrpheusModel:
         logger.info("Setting up vLLM engine")
         try:
             # Extended context window to match the user's requirements
+            kv_cache_dtype = os.getenv("KV_CACHE_DTYPE", "auto")
             engine_args = AsyncEngineArgs(
                 model=self.model_name,
                 quantization=self.quantization,  # Using DeepSpeed FP6/FP8 quantization
+                dtype="bfloat16",
                 max_model_len=self.max_model_len,
                 gpu_memory_utilization=self.gpu_memory_utilization,
                 max_num_batched_tokens=self.max_num_batched_tokens,
@@ -68,8 +70,9 @@ class OrpheusModel:
                 trust_remote_code=True,
                 tokenizer_mode="auto",
                 download_dir=os.getenv("HF_HOME"),
+                kv_cache_dtype=kv_cache_dtype,
             )
-            logger.info(f"vLLM engine args: model={self.model_name}, quantization={self.quantization}, max_model_len={self.max_model_len}")
+            logger.info(f"vLLM engine args: model={self.model_name}, quantization={self.quantization}, dtype=bfloat16, kv_cache_dtype={kv_cache_dtype}, max_model_len={self.max_model_len}")
             return AsyncLLMEngine.from_engine_args(engine_args)
         except Exception as e:
             msg = str(e)

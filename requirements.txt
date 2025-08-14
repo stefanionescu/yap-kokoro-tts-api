@@ -1,35 +1,24 @@
+# server
 fastapi>=0.115.0,<0.116.0
 uvicorn[standard]>=0.30.0,<0.31.0
 python-dotenv==1.0.1
+pydantic>=2.7.0,<3
 
-# Numpy pinned to <2 to avoid ABI issues with compiled wheels in CUDA stacks
+# core stack
 numpy==1.26.4
-
-# PyTorch for vLLM 0.10.0 (matches vLLM requirement)
-torch==2.7.1
-# Optional perf extras (let users install a matching xformers/torchvision if needed)
-# torchvision and xformers are intentionally not pinned to avoid version conflicts
-
-# vLLM with DeepSpeed FP6/FP8 support
-vllm==0.10.0
-
-# Transformers + vision extras
-transformers==4.55.1
+torch==2.7.1           # keep your current if it's stable on your node
+transformers==4.55.1   # vLLM >=0.10 expects >=4.53
 accelerate==0.28.0
 pillow
 timm==0.9.16
 
-# SNAC decoder
-snac==1.2.1
+# vLLM + exact CT pin that vLLM 0.10.0 expects
+vllm==0.10.0
+compressed-tensors==0.10.2
 
-pydantic>=2.7.0,<3
+# audio bits
+snac==1.2.1
 httptools==0.6.1
 setuptools==69.1.1
 tqdm==4.66.2
 websockets==12.0
-
-# DeepSpeed runtime for deepspeedfp quantization
-deepspeed==0.17.4
-
-# DeepSpeedFP runtime components (provides FP_Quantize compatible with vLLM DSFP)
-git+https://github.com/vllm-project/llm-compressor@main
