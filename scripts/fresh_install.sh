@@ -15,26 +15,31 @@ echo "[install] Using repo dir at $REPO_DIR"
 cd "$REPO_DIR"
 
 echo "[install] Materializing project into $REPO_DIR..."
-# Prefer git clone (most robust), fallback to tar copy
-if [ -d "$SRC_DIR/.git" ] && command -v git >/dev/null 2>&1; then
-  set +e
-  REMOTE_URL=$(git -C "$SRC_DIR" config --get remote.origin.url)
-  BRANCH=$(git -C "$SRC_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
-  set -e
-  if [ -n "$REMOTE_URL" ]; then
-    echo "[install] Cloning $REMOTE_URL (branch: ${BRANCH:-default}) -> $REPO_DIR"
-    if [ -n "$BRANCH" ] && [ "$BRANCH" != "HEAD" ]; then
-      git clone --depth 1 -b "$BRANCH" "$REMOTE_URL" "$REPO_DIR"
+# If repo dir already has contents, skip cloning/copying to avoid self-clone errors
+if [ -n "$(ls -A "$REPO_DIR" 2>/dev/null)" ]; then
+  echo "[install] Directory is not empty; skipping clone/copy. Using existing files."
+else
+  # Prefer git clone (most robust), fallback to tar copy
+  if [ -d "$SRC_DIR/.git" ] && command -v git >/dev/null 2>&1; then
+    set +e
+    REMOTE_URL=$(git -C "$SRC_DIR" config --get remote.origin.url)
+    BRANCH=$(git -C "$SRC_DIR" rev-parse --abbrev-ref HEAD 2>/dev/null)
+    set -e
+    if [ -n "$REMOTE_URL" ]; then
+      echo "[install] Cloning $REMOTE_URL (branch: ${BRANCH:-default}) -> $REPO_DIR"
+      if [ -n "$BRANCH" ] && [ "$BRANCH" != "HEAD" ]; then
+        git clone --depth 1 -b "$BRANCH" "$REMOTE_URL" "$REPO_DIR"
+      else
+        git clone --depth 1 "$REMOTE_URL" "$REPO_DIR"
+      fi
     else
-      git clone --depth 1 "$REMOTE_URL" "$REPO_DIR"
+      echo "[install] No remote found; copying via tar"
+      (cd "$SRC_DIR" && tar --exclude='./venv' --exclude='./cache' --exclude='./logs' -cf - .) | (cd "$REPO_DIR" && tar -xf -)
     fi
   else
-    echo "[install] No remote found; copying via tar"
-    (cd "$SRC_DIR" && tar --exclude='./venv' --exclude='./cache' --exclude='./logs' -cf - .) | (cd "$REPO_DIR" && tar -xf -)
+    echo "[install] Copying via tar (no git detected)"
+    (cd "$SRC_DIR" && tar --exclude='./venv' --exclude='./cache' --exclude='./logs' -cf - .) | (tar -xf - -C "$REPO_DIR")
   fi
-else
-  echo "[install] Copying via tar (no git detected)"
-  (cd "$SRC_DIR" && tar --exclude='./venv' --exclude='./cache' --exclude='./logs' -cf - .) | (tar -xf - -C "$REPO_DIR")
 fi
 
 # Fallback guard: ensure files are present
