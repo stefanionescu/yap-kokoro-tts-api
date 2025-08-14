@@ -29,7 +29,7 @@ def main():
     base_url = f"http://{args.host}:{args.port}"
     url = f"{base_url}/v1/audio/speech/stream"
 
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "Accept-Encoding": "identity", "Cache-Control": "no-store"}
     # Prefer Bearer token from env if present
     bearer = os.getenv("RUNPOD_API_KEY") or os.getenv("API_TOKEN")
     if bearer:
@@ -47,11 +47,11 @@ def main():
             first = True
             total = 0
             with open(args.out, "wb") as f:
-                for chunk in r.iter_content(chunk_size=4096):
+                for chunk in r.iter_content(chunk_size=1):
                     if not chunk:
                         continue
                     if first:
-                        print(f"TTFB: {time.time()-t0:.2f}s")
+                        print(f"TTFB: {1000*(time.time()-t0):.0f}ms")
                         first = False
                     f.write(chunk)
                     total += len(chunk)

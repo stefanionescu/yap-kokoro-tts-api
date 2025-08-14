@@ -6,7 +6,9 @@ import os
 from src.vllm import OrpheusModel
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
+import contextlib
 import logging
+import asyncio
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
@@ -49,6 +51,7 @@ class VoicesResponse(BaseModel):
     count: int
     
 engine: OrpheusModel = None
+_keep_hot_task: asyncio.Task | None = None
 VOICE_DETAILS: List[VoiceDetail] = []
 
 @asynccontextmanager
@@ -108,10 +111,42 @@ async def lifespan(app: FastAPI):
     ]
     
     logger.info(f"TTS engine initialized with {len(VOICE_DETAILS)} voices: {', '.join([v.name for v in VOICE_DETAILS])}")
+
+    async def _keep_gpu_hot_loop():
+        """Periodically run a tiny generation to keep GPU kernels warm."""
+        interval = float(os.getenv("KEEP_GPU_HOT_INTERVAL", "25"))
+        voice_hint = os.getenv("KEEP_GPU_HOT_VOICE", "male")
+        prompt_hint = os.getenv("KEEP_GPU_HOT_PROMPT", ".")
+        while True:
+            try:
+                gen = engine.generate_speech_async(
+                    prompt=prompt_hint,
+                    voice=voice_hint,
+                    temperature=0.0,
+                    top_p=0.0,
+                    repetition_penalty=1.0,
+                    max_tokens=1,
+                )
+                async for _ in gen:
+                    break
+            except Exception as e:
+                logger.debug(f"keep_gpu_hot error: {e}")
+            await asyncio.sleep(interval)
+
+    # Start keep-hot task
+    global _keep_hot_task
+    _keep_hot_task = asyncio.create_task(_keep_gpu_hot_loop())
     yield
     
     # Clean up the model and other resources if needed
     logger.info("Shutting down TTS engine")
+    try:
+        if _keep_hot_task is not None:
+            _keep_hot_task.cancel()
+            with contextlib.suppress(Exception):
+                await _keep_hot_task
+    except Exception:
+        pass
 
 app = FastAPI(lifespan=lifespan)
 
@@ -126,9 +161,9 @@ async def tts_stream(data: TTSRequest):
     voice = data.voice
     
     # Apply voice-specific settings based on the selected voice
-    temperature = None  # Will use voice-specific default from the model
-    top_p = float(os.getenv("TOP_P", "0.8"))
-    repetition_penalty = None  # Will use voice-specific default from the model
+    temperature = None  # Use voice-specific default from the model
+    top_p = None        # Use voice-specific default from the model
+    repetition_penalty = None  # Use voice-specific default from the model
     num_ctx = int(os.getenv("NUM_CTX", "8192"))
     num_predict = int(os.getenv("NUM_PREDICT", "49152"))
     
@@ -137,6 +172,10 @@ async def tts_stream(data: TTSRequest):
     async def generate_audio_stream():
         first_chunk = True
         try:
+            # Optional priming to defeat overly aggressive proxy buffering
+            if os.getenv("PRIME_STREAM", "0") == "1":
+                yield b"\0" * 128
+
             audio_generator = engine.generate_speech_async(
                 prompt=data.input,
                 voice=voice,
@@ -156,7 +195,15 @@ async def tts_stream(data: TTSRequest):
         except Exception as e:
             logger.exception(f"Error during audio generation: {str(e)}")
 
-    return StreamingResponse(generate_audio_stream(), media_type='audio/pcm')
+    return StreamingResponse(
+        generate_audio_stream(),
+        media_type='audio/pcm',
+        headers={
+            "X-Accel-Buffering": "no",
+            "Cache-Control": "no-store",
+            "Content-Type": "audio/pcm",
+        },
+    )
 
 
 @app.websocket("/v1/audio/speech/stream/ws")
@@ -178,10 +225,10 @@ async def tts_stream_ws(websocket: WebSocket):
             voice = data.get("voice", "female")
             segment_id = data.get("segment_id", "no_segment_id")
             
-            # Apply voice-specific settings
-            temperature = None  # Will use voice-specific default from the model
-            top_p = float(os.getenv("TOP_P", "0.8"))
-            repetition_penalty = None  # Will use voice-specific default from the model
+            # Apply voice-specific settings (use model defaults for honesty)
+            temperature = None
+            top_p = None
+            repetition_penalty = None
             num_ctx = int(os.getenv("NUM_CTX", "8192"))
             num_predict = int(os.getenv("NUM_PREDICT", "49152"))
 

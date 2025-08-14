@@ -52,12 +52,12 @@ MAX_NUM_SEQS=4
 ENABLE_CHUNKED_PREFILL=True
 VLLM_DISABLE_MULTIMODAL=1
 
-# Voice specific parameters
-TEMPERATURE_TARA=0.8
-TEMPERATURE_ZAC=0.4
-TOP_P=0.8
-REP_PENALTY_TARA=1.9
-REP_PENALTY_ZAC=1.85
+# Voice specific parameters (latency-friendly defaults)
+TEMPERATURE_TARA=0.5
+TEMPERATURE_ZAC=0.3
+TOP_P=0.95
+REP_PENALTY_TARA=1.15
+REP_PENALTY_ZAC=1.12
 
 # Context parameters (for long-form text)
 NUM_CTX=8192
@@ -75,6 +75,14 @@ HF_HOME=
 # Get one from https://huggingface.co/settings/tokens and paste below or
 # export HF_TOKEN in the shell environment.
 HF_TOKEN=
+
+# Keep GPU kernels hot between requests
+KEEP_GPU_HOT_INTERVAL=20
+KEEP_GPU_HOT_VOICE=male
+KEEP_GPU_HOT_PROMPT=.
+
+# Stream priming to defeat proxy buffering (0=off, 1=on)
+PRIME_STREAM=0
 EOL
 
 echo "Setup complete! You can now run scripts/start.sh to launch the API server."

@@ -44,17 +44,18 @@ def warmup_api(host="localhost", port=8000, save_audio=False):
             response = requests.post(
                 f"{base_url}/v1/audio/speech/stream",
                 json={"input": test_text, "voice": voice},
-                stream=True
+                stream=True,
+                headers={"Accept-Encoding": "identity", "Cache-Control": "no-store"}
             )
             
             # Process the streaming response
             audio_chunks = bytearray()
             first_chunk = True
             
-            for chunk in response.iter_content(chunk_size=1024):
+            for chunk in response.iter_content(chunk_size=1):
                 if first_chunk:
                     ttfb = time.time() - start_time
-                    logger.info(f"Time to first byte: {ttfb:.2f} seconds")
+                    logger.info(f"Time to first byte: {ttfb*1000:.0f} ms")
                     first_chunk = False
                 audio_chunks.extend(chunk)
             

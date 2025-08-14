@@ -67,7 +67,7 @@ fi
 SNAC_DIR="$ROOT_DIR/snac_model" SNAC_MODEL_PATH="$ROOT_DIR/snac_model" bash "$SCRIPT_DIR/prepare_model.sh"
 
 # Launch uvicorn in a dedicated process group so we can kill the whole tree by PGID
-setsid bash -lc "uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1" \
+setsid bash -lc "uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1 --http httptools --loop uvloop --timeout-keep-alive 120" \
   > server.log 2>&1 < /dev/null &
 
 SVR_PID=$!

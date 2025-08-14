@@ -28,9 +28,14 @@ class OrpheusModel:
         env_max_len = os.getenv("TRT_MAX_SEQ_LEN") or os.getenv("MAX_MODEL_LEN")
         self.max_model_len = int(env_max_len) if env_max_len else (max_model_len or 8192)
         self.gpu_memory_utilization = gpu_memory_utilization
-        self.max_num_batched_tokens = max_num_batched_tokens
-        self.max_num_seqs = max_num_seqs
-        self.enable_chunked_prefill = enable_chunked_prefill
+        # Allow environment overrides for batching behavior
+        self.max_num_batched_tokens = int(os.getenv("MAX_NUM_BATCHED_TOKENS", str(max_num_batched_tokens)))
+        self.max_num_seqs = int(os.getenv("MAX_NUM_SEQS", str(max_num_seqs)))
+        _ecp = os.getenv("ENABLE_CHUNKED_PREFILL")
+        if _ecp is not None:
+            self.enable_chunked_prefill = _ecp.lower() in {"1", "true", "yes"}
+        else:
+            self.enable_chunked_prefill = enable_chunked_prefill
         
         logger.info(f"Initializing OrpheusModel with model={model_name}, quantization={quantization}")
         self.engine = self._setup_engine()
@@ -38,7 +43,20 @@ class OrpheusModel:
         # Use provided tokenizer path or default to model_name
         tokenizer_path = tokenizer if tokenizer else model_name
         self.tokenizer = self._load_tokenizer(tokenizer_path)
-        logger.info("OrpheusModel initialization complete")
+        logger.info(
+            "OrpheusModel initialization complete | batching: tokens=%s, max_seqs=%s, chunked_prefill=%s",
+            self.max_num_batched_tokens,
+            self.max_num_seqs,
+            self.enable_chunked_prefill,
+        )
+        # Precompute special token text forms once to avoid per-request encode/decode
+        try:
+            self._begin_text = self.tokenizer.decode([128259])  # <|begin_of_text|>
+            self._tail_text = self.tokenizer.decode([128009, 128260, 128261, 128257])
+        except Exception as e:
+            logger.warning(f"Could not precompute special token strings: {e}")
+            self._begin_text = ""
+            self._tail_text = ""
 
     def _load_tokenizer(self, tokenizer_path):
         """Load tokenizer from local path or HuggingFace hub with optional auth."""
@@ -119,16 +137,10 @@ class OrpheusModel:
                 raise ValueError(f"Voice {voice} is not available. Valid options are: {', '.join(self.available_voices)}")
     
     def _format_prompt(self, prompt, voice="female"):
-        # Map external voice name (female/male) to internal model voice name (tara/zac)
+        """Fast string-based prompt formatting using precomputed special token text."""
         model_voice = self._voice_mapping.get(voice, "tara")
         logger.debug(f"Formatting prompt with voice: {voice} (maps to model voice: {model_voice})")
-        adapted_prompt = f"{model_voice}: {prompt}"
-        prompt_tokens = self.tokenizer(adapted_prompt, return_tensors="pt")
-        start_token = torch.tensor([[ 128259]], dtype=torch.int64)
-        end_tokens = torch.tensor([[128009, 128260, 128261, 128257]], dtype=torch.int64)
-        all_input_ids = torch.cat([start_token, prompt_tokens.input_ids, end_tokens], dim=1)
-        prompt_string = self.tokenizer.decode(all_input_ids[0])
-        return prompt_string
+        return f"{self._begin_text}{model_voice}: {prompt}{self._tail_text}"
 
 
     def generate_tokens_sync(self, prompt, voice=None, request_id=None, temperature=None, top_p=None, max_tokens=49152, stop_token_ids=[128258], repetition_penalty=None, num_ctx=8192, num_predict=49152):
@@ -160,21 +172,21 @@ class OrpheusModel:
         # Map external voice to internal model voice
         model_voice = self._voice_mapping.get(voice, "tara")
         
-        # Voice-specific parameters as specified by user
+        # Voice-specific parameters with improved defaults (overridable via env)
         if voice == "female":
             if temperature is None:
-                temperature = 0.80
+                temperature = float(os.getenv("TEMPERATURE_TARA", "0.5"))
             if top_p is None:
-                top_p = 0.80
+                top_p = float(os.getenv("TOP_P", "0.95"))
             if repetition_penalty is None:
-                repetition_penalty = 1.90
+                repetition_penalty = float(os.getenv("REP_PENALTY_TARA", "1.15"))
         else:  # "male" voice
             if temperature is None:
-                temperature = 0.4
+                temperature = float(os.getenv("TEMPERATURE_ZAC", "0.3"))
             if top_p is None:
-                top_p = 0.80
+                top_p = float(os.getenv("TOP_P", "0.95"))
             if repetition_penalty is None:
-                repetition_penalty = 1.85
+                repetition_penalty = float(os.getenv("REP_PENALTY_ZAC", "1.12"))
             
         logger.info(f"Generating speech for prompt (length: {len(prompt)}), voice: {voice}")
         logger.info(f"Parameters: temp={temperature}, top_p={top_p}, rep_penalty={repetition_penalty}, num_ctx={num_ctx}, num_predict={num_predict}")
