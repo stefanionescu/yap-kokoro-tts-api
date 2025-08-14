@@ -60,27 +60,42 @@ def _http_measure(base_url: str, text: str, voice: str, save_audio: bool):
         "top_p": top_p,
         "repetition_penalty": rep,
     }
-    headers = {"Accept-Encoding": "identity", "Cache-Control": "no-store"}
+    headers = {"Accept-Encoding": "identity", "Cache-Control": "no-store", "Content-Type": "application/json"}
     t0 = time.time()
-    r = requests.post(url, json=payload, stream=True, headers=headers)
-    r.raise_for_status()
-    first = True
     total = 0
     t_first = None
-    for chunk in r.iter_content(chunk_size=1):
-        if not chunk:
-            continue
-        if first:
-            t_first = time.time()
-            first = False
-        total += len(chunk)
+    audio_buf = bytearray() if save_audio else None
+    # Use context manager so the connection is always closed
+    with requests.post(url, json=payload, stream=True, headers=headers, timeout=(5, 60)) as r:
+        if r.status_code != 200:
+            # Try to extract error body for diagnostics
+            body = None
+            try:
+                body = r.text[:500]
+            except Exception:
+                body = None
+            raise RuntimeError(f"HTTP {r.status_code} for {voice} | body={body}")
+
+        try:
+            for chunk in r.iter_content(chunk_size=1):
+                if not chunk:
+                    continue
+                if t_first is None:
+                    t_first = time.time()
+                total += len(chunk)
+                if audio_buf is not None:
+                    audio_buf.extend(chunk)
+        except requests.exceptions.ChunkedEncodingError as e:
+            # Treat truncated chunked stream as end-of-stream; compute metrics on bytes received
+            pass
+
     t_end = time.time()
     metrics = _compute_metrics(total, t0, t_first or t_end, t_end)
-    if save_audio and total > 0:
+    if save_audio and total > 0 and audio_buf is not None:
         os.makedirs("warmup_audio", exist_ok=True)
         out = f"warmup_audio/warmup_http_{voice}.pcm"
         with open(out, "wb") as f:
-            f.write(b"".join(r.iter_content(chunk_size=None)))
+            f.write(audio_buf)
     return metrics
 
 async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool):
@@ -148,7 +163,7 @@ def warmup_api(host="localhost", port=8000, save_audio=False):
             http_m = _http_measure(base_url, test_text, voice, save_audio)
             logger.info(_format_metrics(f"HTTP {voice}", http_m))
         except Exception as e:
-            logger.error(f"[HTTP] Error for voice '{voice}': {e}")
+            logger.exception(f"[HTTP] Error for voice '{voice}': {type(e).__name__}: {e}")
 
         logger.info(f"[WS] {voice}: starting…")
         try:
