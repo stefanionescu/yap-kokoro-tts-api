@@ -2,6 +2,7 @@ import asyncio
 import torch
 import os
 import logging
+import json
 from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
 from transformers import AutoTokenizer
 import threading
@@ -55,6 +56,10 @@ class OrpheusModel:
     def _setup_engine(self):
         logger.info("Setting up vLLM engine")
         try:
+            # Ensure DSFP quant config exists when using deepspeedfp and local model path
+            if self.quantization == "deepspeedfp" and os.path.isdir(self.model_name):
+                self._ensure_dsfp_quant_config(self.model_name)
+
             # Extended context window to match the user's requirements
             kv_cache_dtype = os.getenv("KV_CACHE_DTYPE", "auto")
             engine_args = AsyncEngineArgs(
@@ -79,6 +84,32 @@ class OrpheusModel:
             # Enforce quantization: with vLLM >= 0.10.0, deepspeedfp should be supported.
             logger.error(f"Failed to initialize vLLM engine: {e}")
             raise
+
+    def _ensure_dsfp_quant_config(self, model_dir: str) -> None:
+        """Ensure a DSFP quant_config.json exists with required fields.
+
+        vLLM 0.10.0 expects 'bits' and 'group_size' for DSFP quantization.
+        Do not set 'quant_method' here; vLLM infers from quantization flag.
+        """
+        try:
+            config_path = os.path.join(model_dir, "quant_config.json")
+            desired_bits = int(os.getenv("DSFP_BITS", "6"))
+            desired_group_size = 512
+
+            need_write = True
+            if os.path.exists(config_path):
+                with open(config_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict) and "bits" in data and "group_size" in data:
+                    # Keep existing if both fields present
+                    need_write = False
+
+            if need_write:
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump({"bits": desired_bits, "group_size": desired_group_size}, f)
+                logger.info(f"Wrote DSFP quant_config.json to {config_path} (bits={desired_bits}, group_size={desired_group_size})")
+        except Exception as e:
+            logger.warning(f"Could not ensure DSFP quant_config.json: {e}")
     
     def validate_voice(self, voice):
         if voice:

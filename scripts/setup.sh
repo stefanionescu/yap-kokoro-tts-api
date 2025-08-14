@@ -20,6 +20,15 @@ echo "Installing Python dependencies..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
+# Install lightweight deepspeed needed by vLLM DSFP importer (no CUDA kernels)
+pip uninstall -y deepspeed || true
+DS_BUILD_OPS=0 DS_BUILD_AIO=0 DS_BUILD_SPARSE_ATTN=0 \
+  pip install deepspeed==0.14.4 --no-build-isolation --no-cache-dir
+python - <<'PY'
+import deepspeed
+print('[setup] deepspeed', deepspeed.__version__)
+PY
+
 mkdir -p logs cache
 
 echo "Setting up environment variables..."
