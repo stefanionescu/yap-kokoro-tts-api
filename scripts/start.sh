@@ -67,14 +67,13 @@ fi
 SNAC_DIR="$ROOT_DIR/snac_model" SNAC_MODEL_PATH="$ROOT_DIR/snac_model" bash "$SCRIPT_DIR/prepare_model.sh"
 
 # Launch uvicorn in a dedicated process group so we can kill the whole tree by PGID
-mkdir -p logs
 setsid bash -lc "uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1" \
-  > logs/app.out 2>&1 < /dev/null &
+  > server.log 2>&1 < /dev/null &
 
 SVR_PID=$!
 SVR_PGID=$(ps -o pgid= -p "$SVR_PID" | tr -d ' ')
 echo "$SVR_PID"  > server.pid
 echo "$SVR_PGID" > server.pgid
-echo "[start] server pid=$SVR_PID pgid=$SVR_PGID (logs at logs/app.out)"
+echo "[start] server pid=$SVR_PID pgid=$SVR_PGID (logs at server.log)"
 
 

@@ -21,12 +21,19 @@ FastAPI-based service for [Canopy Labs' Orpheus 3B](https://huggingface.co/canop
 bash scripts/setup.sh
 ```
 
-2) Start
+2) Start (foreground)
 ```bash
 bash scripts/start.sh
 ```
 
-3) Test
+3) Start (background, survives closing web console)
+```bash
+bash scripts/start_bg.sh          # writes server.pid / server.pgid, logs → server.log
+bash scripts/tail_bg_logs.sh      # view logs
+bash scripts/stop.sh              # stop background server
+```
+
+4) Test HTTP streaming
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech/stream \
   -H "Content-Type: application/json" \
@@ -38,6 +45,12 @@ curl -X POST http://localhost:8000/v1/audio/speech/stream \
   -H "Content-Type: application/json" \
   -d '{"input":"Testing male voice.", "voice":"male"}' \
   --output test_male.pcm
+```
+
+5) Warmup (optional)
+```bash
+source venv/bin/activate
+python warmup.py --host localhost --port 8000 --save   # saves warmup_audio/*.pcm
 ```
 
 ## API Docs
@@ -67,14 +80,21 @@ git clone https://github.com/yourusername/yap-voice-model-deployment.git
 cd yap-voice-model-deployment
 export HF_TOKEN=hf_xxx; export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 bash scripts/fresh_install.sh
-bash scripts/start.sh &
+bash scripts/start_bg.sh
 ```
 
 Manual:
 ```bash
 bash scripts/setup.sh
-bash scripts/start.sh
+bash scripts/start_bg.sh
 source venv/bin/activate && python warmup.py --save
+```
+
+Stopping and cleaning (keeps web console alive):
+```bash
+bash scripts/stop.sh                 # stop background server
+bash scripts/purge_pod.sh            # stop server group only (safe)
+bash scripts/purge_pod.sh --clean-files   # also remove venv/model/cache/logs
 ```
 
 Token setup:
@@ -85,10 +105,19 @@ export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 
 ## Configuration (.env)
 
-- MODEL_NAME, QUANTIZATION (`deepspeedfp` or `awq`)
+- MODEL_NAME, QUANTIZATION (`deepspeedfp`)
 - GPU_MEMORY_UTILIZATION, MAX_MODEL_LEN (default 8192)
 - NUM_CTX, NUM_PREDICT, MAX_TOKENS
 - HF_HOME (cache dir), HF_TOKEN (required for gated model)
+
+Runtime envs (sensible defaults set by scripts/start.sh):
+- TORCH_COMPILE_DISABLE=1, TORCHDYNAMO_DISABLE=1 (disable Torch compile for DSFP)
+- KV_CACHE_DTYPE=fp8 (smaller KV cache); set to `auto` if you prefer default
+- VLLM_LOGGING_LEVEL=INFO (use DEBUG for detailed logs)
+
+Notes:
+- DSFP-6 is enabled by `quantization=deepspeedfp` and a `model/quant_config.json` with `{ "bits": 6, "group_size": 512 }` (generated automatically on first start)
+- Voices exposed by API: `female`, `male`
 
 ## Components
 
@@ -99,7 +128,15 @@ export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 
 ## Requirements
 
-See `requirements.txt` (vLLM 0.10.0, torch 2.7.1). 
+See `requirements.txt` (vLLM 0.10.0, torch 2.7.1).
+
+## Remote client
+
+Use the included client to call the API from your local machine or another host:
+```bash
+python client.py --host <RUNPOD_PUBLIC_IP> --port 8000 \
+  --text "Hello there" --voice female --out hello.pcm
+```
 
 ## Acknowledgements
 
