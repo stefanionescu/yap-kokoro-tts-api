@@ -1,8 +1,8 @@
 import os
 from huggingface_hub import HfApi, create_repo, upload_folder
 
-SRC = os.environ.get("SRC", "./awq_model")
-REPO_ID = os.environ.get("REPO_ID", "your-org/orpheus-3b-awq-6bit")
+SRC = os.environ.get("SRC", "./dsfp_model")
+REPO_ID = os.environ.get("REPO_ID", "your-org/orpheus-3b-dsfp6")
 
 def main():
     token = os.environ.get("HUGGING_FACE_HUB_TOKEN") or os.environ.get("HF_TOKEN")
@@ -18,7 +18,7 @@ def main():
         repo_id=REPO_ID,
         repo_type="model",
         token=token,
-        commit_message="Add AWQ 6-bit quantized Orpheus",
+        commit_message="Add DeepSpeedFP 6-bit (FP6) exported Orpheus",
     )
     print("Done.")
 
