@@ -28,14 +28,39 @@ source venv/bin/activate
 pip install --upgrade pip
 pip install --no-cache-dir -r requirements.txt
 
+# Ensure torch is present; install a CUDA build if not found
+if ! python - <<'PY'
+import importlib.util
+exit(0 if importlib.util.find_spec('torch') else 1)
+PY
+then
+  echo "[run_all_dsfp] torch not found; attempting install..." >&2
+  if [[ -n "${TORCH_SPEC:-}" ]]; then
+    if [[ -n "${TORCH_INDEX_URL:-}" ]]; then
+      pip install --no-cache-dir --extra-index-url "$TORCH_INDEX_URL" "$TORCH_SPEC"
+    else
+      pip install --no-cache-dir "$TORCH_SPEC"
+    fi
+  else
+    # Try common CUDA wheels, fallback to CPU
+    pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu124 torch==2.5.1 || \
+    pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cu121 torch==2.5.1 || \
+    pip install --no-cache-dir torch
+  fi
+fi
+
 echo "[run_all_dsfp] Step 1: Fetch base FP model..."
 python 01_fetch.py
 
 echo "[run_all_dsfp] Step 2: Export DeepSpeedFP (FP6) weights..."
 python 02_dsfp_export.py
 
-echo "[run_all_dsfp] Step 3: Validate DSFP model with vLLM..."
-python 03_validate_dsfp.py || echo "[run_all_dsfp] Validation used a tiny generate; continuing."
+if [[ -z "${SKIP_VALIDATE:-}" ]]; then
+  echo "[run_all_dsfp] Step 3: Validate DSFP model with vLLM..."
+  python 03_validate_dsfp.py || echo "[run_all_dsfp] Validation used a tiny generate; continuing."
+else
+  echo "[run_all_dsfp] Skipping validation (SKIP_VALIDATE set)."
+fi
 
 echo "[run_all_dsfp] Step 4: Push to Hugging Face: $REPO_ID"
 SRC=./dsfp_model REPO_ID="$REPO_ID" python 04_push_hf.py
