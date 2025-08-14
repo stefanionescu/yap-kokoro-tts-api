@@ -83,21 +83,34 @@ then
   fi
 fi
 
-echo "[run_all_dsfp] Step 1: Fetch base FP model..."
-python 01_fetch.py
+FETCH_DIR=${FETCH_DIR:-./base_model}
+EXPORT_DIR=${EXPORT_DIR:-./dsfp_model}
 
-echo "[run_all_dsfp] Step 2: Export DeepSpeedFP (FP6) weights..."
-python 02_dsfp_export.py
+echo "[run_all_dsfp] Step 1: Fetch base FP model -> $FETCH_DIR"
+OUT_DIR="$FETCH_DIR" python 01_fetch.py
+
+echo "[run_all_dsfp] Ensuring llm-compressor is installed..."
+if ! python - <<'PY'
+import importlib.util
+exit(0 if importlib.util.find_spec('llmcompressor') else 1)
+PY
+then
+  echo "[run_all_dsfp] Installing llm-compressor from GitHub..." >&2
+  python -m pip install --no-cache-dir -U git+https://github.com/vllm-project/llm-compressor.git
+fi
+
+echo "[run_all_dsfp] Step 2: Export DeepSpeedFP (FP6) weights -> $EXPORT_DIR"
+SRC="$FETCH_DIR" OUT="$EXPORT_DIR" python 02_dsfp_export.py
 
 if [[ -z "${SKIP_VALIDATE:-}" ]]; then
-  echo "[run_all_dsfp] Step 3: Validate DSFP model with vLLM..."
-  python 03_validate_dsfp.py || echo "[run_all_dsfp] Validation used a tiny generate; continuing."
+echo "[run_all_dsfp] Step 3: Validate DSFP model with vLLM..."
+MODEL_DIR="$EXPORT_DIR" python 03_validate_dsfp.py || echo "[run_all_dsfp] Validation used a tiny generate; continuing."
 else
   echo "[run_all_dsfp] Skipping validation (SKIP_VALIDATE set)."
 fi
 
 echo "[run_all_dsfp] Step 4: Push to Hugging Face: $REPO_ID"
-SRC=./dsfp_model REPO_ID="$REPO_ID" python 04_push_hf.py
+SRC="$EXPORT_DIR" REPO_ID="$REPO_ID" python 04_push_hf.py
 
 echo "[run_all_dsfp] Done. Set in deployment .env:"
 echo "  MODEL_NAME=$REPO_ID"
