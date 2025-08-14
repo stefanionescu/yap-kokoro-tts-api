@@ -247,58 +247,17 @@ class OrpheusModel:
             Async generator yielding audio chunks
         """
         logger.debug(f"Starting async speech generation for prompt: '{prompt[:20]}...'")
-        
-        # These match parameters in the Ollama implementation
-        kwargs.setdefault('max_tokens', 49152)   # Default to match Ollama's num_predict
-        kwargs.setdefault('num_ctx', 8192)       # Default context size
-        kwargs.setdefault('num_predict', 49152)  # Default prediction limit
-        
-        # Extra tokens to process after seeing the end-of-text marker
-        # This matches the N_EXTRA_AFTER_EOT value in the Ollama implementation
-        N_EXTRA_AFTER_EOT = 8192
-        logger.debug(f"Using N_EXTRA_AFTER_EOT={N_EXTRA_AFTER_EOT} to ensure all frames are processed")
-        
-        token_gen = self.generate_tokens_sync(prompt=prompt, voice=voice, **kwargs)
-        
-        # Create a queue for audio chunks
-        audio_queue = asyncio.Queue()
-        
-        # Create a task to process tokens and put audio chunks in the queue
-        async def process_tokens():
-            try:
-                frame_buffer = []  # Buffer to collect tokens into frames of 7
-                for token in token_gen:
-                    frame_buffer.append(token)
-                    
-                    # Process in groups of 7 (SNAC frame size)
-                    if len(frame_buffer) >= 7:
-                        audio = await asyncio.to_thread(lambda: next(tokens_decoder_sync(frame_buffer)))
-                        frame_buffer = []  # Clear buffer after processing
-                        if audio:
-                            await audio_queue.put(audio)
-                
-                # Process any remaining tokens
-                if frame_buffer:
-                    audio = await asyncio.to_thread(lambda: next(tokens_decoder_sync(frame_buffer)))
-                    if audio:
-                        await audio_queue.put(audio)
-                
-                # Signal the end of processing
-                await audio_queue.put(None)
-            except Exception as e:
-                logger.error(f"Error processing tokens: {str(e)}")
-                await audio_queue.put(None)
-                
-        # Start the processing task
-        task = asyncio.create_task(process_tokens())
-        
-        # Yield audio chunks as they become available
-        try:
-            while True:
-                audio_chunk = await audio_queue.get()
-                if audio_chunk is None:
-                    break
-                yield audio_chunk
-        finally:
-            # Ensure the task is properly awaited
-            await task
+
+        # Defaults matching Ollama reference
+        kwargs.setdefault('max_tokens', 49152)
+        kwargs.setdefault('num_ctx', 8192)
+        kwargs.setdefault('num_predict', 49152)
+
+        # Reuse proven sync path end-to-end and consume it without blocking the loop
+        sync_audio_gen = self.generate_speech(prompt=prompt, voice=voice, **kwargs)
+
+        while True:
+            chunk = await asyncio.to_thread(lambda: next(sync_audio_gen, None))
+            if chunk is None:
+                break
+            yield chunk
