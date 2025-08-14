@@ -18,13 +18,12 @@ if [ -f "$(dirname "$SCRIPT_PATH")/../server.pid" ]; then
   rm -f "$PID_FILE"
 fi
 
-# Broad kill of common processes
+# Broad kill of common processes (do NOT kill Jupyter by default; use --kill-jupyter)
 pkill -f uvicorn || true
 pkill -f "python .*main.py" || true
 pkill -f "python -m vllm" || true
 pkill -f vllm || true
 pkill -f ray || true
-pkill -f jupyter || true
 pkill -f gunicorn || true
 pkill -f start.sh || true
 pkill -f start_bg.sh || true
@@ -38,10 +37,18 @@ SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 REPO_DIR=$(dirname "$SCRIPT_DIR")
 
-# Args: --delete-repo to also remove the cloned repo directory
+# Args: --delete-repo (remove repo) | --kill-jupyter (also stop Jupyter)
 DELETE_REPO=false
-if [[ ${1:-} == "--delete-repo" ]]; then
-  DELETE_REPO=true
+KILL_JUPYTER=false
+for arg in "$@"; do
+  case "$arg" in
+    --delete-repo) DELETE_REPO=true ;;
+    --kill-jupyter) KILL_JUPYTER=true ;;
+  esac
+done
+
+if $KILL_JUPYTER; then
+  pkill -f jupyter || true
 fi
 
 echo "[purge] Removing in-repo runtime dirs (venv, model, snac_model, cache, logs) and caches..."

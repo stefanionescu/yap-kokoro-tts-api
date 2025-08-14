@@ -75,6 +75,7 @@ class OrpheusModel:
                 trust_remote_code=True,
                 tokenizer_mode="auto",
                 download_dir=os.getenv("HF_HOME"),
+                enforce_eager=True,
                 kv_cache_dtype=kv_cache_dtype,
             )
             logger.info(f"vLLM engine args: model={self.model_name}, quantization={self.quantization}, dtype=bfloat16, kv_cache_dtype={kv_cache_dtype}, max_model_len={self.max_model_len}")

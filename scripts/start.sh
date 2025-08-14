@@ -42,6 +42,14 @@ echo " - tara (female): temperature=$TEMPERATURE_TARA, top_p=$TOP_P, repetition_
 echo " - zac (male): temperature=$TEMPERATURE_ZAC, top_p=$TOP_P, repetition_penalty=$REP_PENALTY_ZAC"
 echo "Context window: $NUM_CTX, Max prediction: $NUM_PREDICT"
 
+# Force eager/no-compile for DSFP path unless overridden, and set kv-cache dtype
+export TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE:-1}
+export TORCHDYNAMO_DISABLE=${TORCHDYNAMO_DISABLE:-1}
+export KV_CACHE_DTYPE=${KV_CACHE_DTYPE:-fp8}
+export VLLM_LOGGING_LEVEL=${VLLM_LOGGING_LEVEL:-INFO}
+echo "Torch compile disabled: TORCH_COMPILE_DISABLE=$TORCH_COMPILE_DISABLE, TORCHDYNAMO_DISABLE=$TORCHDYNAMO_DISABLE"
+echo "vLLM KV cache dtype: $KV_CACHE_DTYPE | vLLM logging: $VLLM_LOGGING_LEVEL"
+
 # Export HF tokens for gated models
 if [ -n "$HUGGING_FACE_HUB_TOKEN" ]; then
     export HUGGING_FACE_HUB_TOKEN
