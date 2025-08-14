@@ -1,6 +1,6 @@
-autoawq>=0.2.9
+autoawq==0.2.9
 # If a prebuilt wheel exists for your CUDA/Torch, this speeds up quantization. Otherwise it will fallback.
-autoawq-kernels>=0.0.7
+autoawq-kernels==0.0.7
 transformers==4.55.1
 huggingface_hub>=0.24.0
 accelerate>=0.28.0

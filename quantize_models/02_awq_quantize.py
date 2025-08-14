@@ -19,9 +19,10 @@ def main():
     model.quantize(
         tok,
         quant_config={
-            "w_bits": 6,
+            "w_bit": 6,
             "q_group_size": 128,
             "zero_point": True,
+            "version": "GEMM",
         },
     )
 
