@@ -30,3 +30,6 @@ websockets==12.0
 
 # DeepSpeed runtime for deepspeedfp quantization
 deepspeed==0.17.4
+
+# DeepSpeedFP runtime components (provides FP_Quantize compatible with vLLM DSFP)
+git+https://github.com/vllm-project/llm-compressor@main

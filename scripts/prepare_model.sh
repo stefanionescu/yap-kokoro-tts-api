@@ -88,11 +88,11 @@ print("[prepare_model] Patch complete; changed:", changed)
 PY
 
 # Write deepspeedfp runtime quantization config next to the local model
+# DSFP in vLLM does not accept group_size; keep config minimal
 cat > "$MODEL_PATH_DEFAULT/quant_config.json" <<JSON
 {
   "quant_method": "deepspeedfp",
-  "bits": $DSFP_BITS,
-  "group_size": 512
+  "bits": $DSFP_BITS
 }
 JSON
 echo "[prepare_model] Wrote DeepSpeedFP quant_config.json (bits=$DSFP_BITS) to $MODEL_PATH_DEFAULT"
