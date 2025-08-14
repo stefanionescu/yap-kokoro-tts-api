@@ -1,73 +1,84 @@
 #!/bin/bash
 set -euo pipefail
 
+# Default knobs
+PORT=${PORT:-8000}
+DO_CLEAN_FILES=false
+DO_AGGRESSIVE=false
+DO_GPU_RESET=false   # resetting GPU can kill other CUDA users; off by default
+DO_KILL_JUPYTER=false
+DO_KILL_SESSIONS=false
+
+usage() {
+  cat <<EOF
+Usage: $0 [--port N] [--clean-files] [--aggressive] [--gpu-reset] [--kill-jupyter] [--kill-sessions]
+ - Default: stop only the voice server (uvicorn + vLLM children) using server.pgid or :PORT detection.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --port) PORT="$2"; shift 2 ;;
+    --clean-files) DO_CLEAN_FILES=true; shift ;;
+    --aggressive) DO_AGGRESSIVE=true; DO_CLEAN_FILES=true; shift ;;
+    --gpu-reset) DO_GPU_RESET=true; shift ;;
+    --kill-jupyter) DO_KILL_JUPYTER=true; shift ;;
+    --kill-sessions) DO_KILL_SESSIONS=true; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown arg: $1"; usage; exit 1 ;;
+  esac
+done
+
 WORK=/workspace
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
 REPO_DIR=$(dirname "$SCRIPT_DIR")
 
-echo "[purge] Stopping GPU-related server processes (safe mode)..."
+echo "[purge] Targeting only the TTS server on :$PORT"
 
-# Stop background server by PID if present
+# 1) Prefer killing by recorded PGID (cleanest)
+PGID_FILE="$REPO_DIR/server.pgid"
 PID_FILE="$REPO_DIR/server.pid"
-if [ -f "$PID_FILE" ]; then
-  if [ -s "$PID_FILE" ]; then
-    PID=$(cat "$PID_FILE" 2>/dev/null || true)
-    if [ -n "${PID:-}" ] && kill -0 "$PID" 2>/dev/null; then
-      kill "$PID" || true
-      sleep 1
-      kill -9 "$PID" || true
-      echo "[purge] Killed server PID $PID"
-    fi
+
+kill_group() {
+  local pg="$1"
+  if [[ -n "$pg" ]]; then
+    echo "[purge] Killing process group -$pg ..."
+    kill -TERM "-- -$pg" 2>/dev/null || true
+    sleep 1
+    kill -KILL "-- -$pg" 2>/dev/null || true
   fi
-  rm -f "$PID_FILE"
+}
+
+if [[ -s "$PGID_FILE" ]]; then
+  PGID=$(tr -d ' ' < "$PGID_FILE" || true)
+  kill_group "$PGID"
+  rm -f "$PGID_FILE" "$PID_FILE"
+else
+  # 2) Fallback: discover listener PID on :PORT and kill its group
+  PID=$(ss -ltnp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p {match($NF,/pid=([0-9]+)/,m); if(m[1]) {print m[1]; exit}}')
+  if [[ -n "${PID:-}" ]]; then
+    PGID=$(ps -o pgid= -p "$PID" | tr -d ' ')
+    kill_group "$PGID"
+  else
+    echo "[purge] No uvicorn/vLLM listener found on :$PORT"
+  fi
 fi
 
-# Broad kill of common processes (do NOT kill Jupyter/console by default)
-pkill -f uvicorn || true
-pkill -f "python .*main.py" || true
-pkill -f "python -m vllm" || true
-pkill -f vllm || true
-pkill -f ray || true
-pkill -f gunicorn || true
-pkill -f start.sh || true
-pkill -f start_bg.sh || true
-
-# Optionally kill tmux/screen sessions (only if requested later)
-
-# (paths already set above)
-
-# Flags (defaults = GPU-only safe purge)
-CLEAN_FILES=false       # remove venv/model/cache/logs
-DELETE_REPO=false       # remove repo dir
-KILL_JUPYTER=false      # also stop Jupyter (web console)
-KILL_SESSIONS=false     # kill tmux/screen sessions
-AGGRESSIVE=false        # also remove global site-packages and apt/pip caches
-
-for arg in "$@"; do
-  case "$arg" in
-    --clean-files) CLEAN_FILES=true ;;
-    --delete-repo) DELETE_REPO=true ;;
-    --kill-jupyter) KILL_JUPYTER=true ;;
-    --kill-sessions) KILL_SESSIONS=true ;;
-    --aggressive) AGGRESSIVE=true; CLEAN_FILES=true ;;
-    --all) CLEAN_FILES=true; DELETE_REPO=true; KILL_JUPYTER=true; KILL_SESSIONS=true; AGGRESSIVE=true ;;
-  esac
-done
-
-if $KILL_JUPYTER; then
+# 3) DO NOT broad-pkill here. Keep the console alive.
+if $DO_KILL_JUPYTER; then
   echo "[purge] Killing Jupyter as requested (--kill-jupyter)"
-  pkill -f jupyter || true
+  pkill -f '^jupyter-(lab|notebook)' || true
+fi
+if $DO_KILL_SESSIONS; then
+  echo "[purge] Killing tmux/screen as requested (--kill-sessions)"
+  tmux kill-server 2>/dev/null || true
+  screen -ls | awk '/Detached|Attached/ {print $1}' | xargs -r -n1 screen -S 2>/dev/null || true
 fi
 
-if $KILL_SESSIONS; then
-  echo "[purge] Killing tmux/screen sessions as requested (--kill-sessions)"
-  tmux kill-server || true
-  screen -ls | awk '/Detached|Attached/ {print $1}' | xargs -r -n1 screen -S || true
-fi
-
-if $CLEAN_FILES; then
-  echo "[purge] Removing in-repo runtime dirs (venv, model, snac_model, cache, logs) and caches..."
+# 4) Optional cleanup (safe set)
+if $DO_CLEAN_FILES; then
+  echo "[purge] Cleaning in-repo runtime dirs (safe set)..."
   rm -rf \
     "$REPO_DIR/venv" \
     "$REPO_DIR/model" \
@@ -76,78 +87,34 @@ if $CLEAN_FILES; then
     "$REPO_DIR/logs" \
     "$REPO_DIR/server.log" \
     "$REPO_DIR/server.pid" \
+    "$REPO_DIR/server.pgid" \
     "$REPO_DIR/warmup_audio" \
     "$WORK/.cache/huggingface" \
-    "$WORK/hf" \
     "$HOME/.cache/huggingface" \
-    "$HOME/.cache/pip" \
-    "$HOME/.nv/ComputeCache" \
-    /tmp/* || true
-else
-  echo "[purge] Skipping file cleanup (use --clean-files to remove venv/model/cache/logs)"
+    "$HOME/.nv/ComputeCache" || true
+  # Do NOT wipe /tmp by default; it kills the web console.
 fi
 
-if $DELETE_REPO; then
-  echo "[purge] Deleting repo dir: $REPO_DIR"
-  rm -rf "$REPO_DIR"
-else
-  echo "[purge] Keeping repo dir: $REPO_DIR (pass --delete-repo to remove)"
-fi
-
-if $AGGRESSIVE; then
-  echo "[purge] Clearing pip/apt caches..."
+# 5) Aggressive cleanup (explicit opt-in; may disrupt console)
+if $DO_AGGRESSIVE; then
+  echo "[purge] Aggressive purge enabled -- this may disrupt Jupyter/console!"
   pip cache purge || true
   apt-get clean || true
   rm -rf /var/lib/apt/lists/* || true
+  # torch extensions cache only (safe)
+  rm -rf "${TORCH_EXTENSIONS_DIR:-$HOME/.cache/torch_extensions}" || true
+  # still avoid 'rm -rf /tmp/*' unless you absolutely must:
+  # rm -rf /tmp/*   # <- DANGEROUS, commented by design
 fi
 
-# Aggressive: remove globally installed heavy python deps (outside venv)
-if $AGGRESSIVE; then
-  echo "[purge] Removing global Python GPU/ML packages (torch, vllm, etc.)..."
-  GLOBAL_SITE=/usr/local/lib/python3.11/dist-packages
-  rm -rf \
-    "$GLOBAL_SITE"/torch* \
-    "$GLOBAL_SITE"/torchvision* \
-    "$GLOBAL_SITE"/triton* \
-    "$GLOBAL_SITE"/xformers* \
-    "$GLOBAL_SITE"/vllm* \
-    "$GLOBAL_SITE"/transformers* \
-    "$GLOBAL_SITE"/deepspeed* \
-    "$GLOBAL_SITE"/ray* \
-    "$GLOBAL_SITE"/sentencepiece* \
-    "$GLOBAL_SITE"/nvidia* \
-    "$GLOBAL_SITE"/numpy* || true
-fi
-
-# Remove potential global entry points
-rm -f /usr/local/bin/uvicorn /usr/local/bin/ray /usr/local/bin/transformers-cli || true
-
-# Final cache sweep
-rm -rf ~/.cache/pip /root/.cache/pip /tmp/* || true
-
-echo "[purge] Attempting to kill any remaining GPU processes..."
-if command -v nvidia-smi >/dev/null 2>&1; then
-  nvidia-smi || true
-  PIDS=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | tr '\n' ' ')
-  if [ -n "$PIDS" ]; then
-    echo "[purge] Killing GPU PIDs: $PIDS"
-    for p in $PIDS; do kill -9 "$p" 2>/dev/null || true; done
-  else
-    echo "[purge] No GPU compute processes reported by nvidia-smi"
-  fi
-
-  echo "[purge] Resetting GPU (if idle)..."
+# 6) Optional GPU reset (kills any remaining CUDA users)
+if $DO_GPU_RESET && command -v nvidia-smi >/dev/null 2>&1; then
+  echo "[purge] Attempting GPU reset..."
+  nvidia-smi --query-compute-apps=pid --format=csv,noheader | xargs -r -n1 kill -9 2>/dev/null || true
   nvidia-smi -pm 0 || true
   nvidia-smi --gpu-reset -i 0 || true
   nvidia-smi -pm 1 || true
-  nvidia-smi || true
-else
-  echo "[purge] nvidia-smi not found; skipping GPU reset"
 fi
 
-echo "[purge] Disk usage after purge:"
+echo "[purge] Done. Disk usage:"
 df -h || true
-
-echo "[purge] Done."
-
-
