@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-REPO_DIR=/workspace/orpheus-tts
+REPO_DIR=$(dirname "$(dirname "$(readlink -f "$0")")")
 # Resolve source repo dir BEFORE changing directories
 SCRIPT_PATH=$(readlink -f "$0")
 SCRIPT_DIR=$(dirname "$SCRIPT_PATH")
@@ -11,9 +11,7 @@ if [ -z "${HF_TOKEN:-}" ]; then
   echo "[install] Warning: HF_TOKEN is not set. Set it to access gated models."
 fi
 
-echo "[install] Creating repo dir at $REPO_DIR"
-rm -rf "$REPO_DIR"
-mkdir -p "$REPO_DIR"
+echo "[install] Using repo dir at $REPO_DIR"
 cd "$REPO_DIR"
 
 echo "[install] Materializing project into $REPO_DIR..."

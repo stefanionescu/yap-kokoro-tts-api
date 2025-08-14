@@ -50,13 +50,13 @@ elif [ -n "$HF_TOKEN" ]; then
     export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
 fi
 
-# Ensure HF_HOME is set to volume cache
+# Ensure HF_HOME is set to repo cache
 if [ -z "${HF_HOME:-}" ]; then
     export HF_HOME="$ROOT_DIR/cache"
 fi
 
 # Prepare local model snapshot (downloads only inference files and removes rope_scaling)
-bash "$SCRIPT_DIR/prepare_model.sh"
+SNAC_DIR="$ROOT_DIR/snac_model" SNAC_MODEL_PATH="$ROOT_DIR/snac_model" bash "$SCRIPT_DIR/prepare_model.sh"
 
 uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1
 

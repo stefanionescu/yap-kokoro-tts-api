@@ -9,7 +9,7 @@ cd "$ROOT_DIR"
 # Read env
 source .env || true
 
-MODEL_PATH_DEFAULT="/workspace/orpheus-tts/model"
+MODEL_PATH_DEFAULT="$ROOT_DIR/model"
 HF_REPO=${MODEL_NAME:-canopylabs/orpheus-3b-0.1-ft}
 
 # Temporarily force online mode for downloads
@@ -32,7 +32,7 @@ from huggingface_hub import snapshot_download
 
 repo=os.getenv("MODEL_NAME","canopylabs/orpheus-3b-0.1-ft")
 token=os.getenv("HUGGING_FACE_HUB_TOKEN") or os.getenv("HF_TOKEN")
-local_dir=os.getenv("MODEL_PATH_DEFAULT","/workspace/orpheus-tts/model")
+local_dir=os.getenv("MODEL_PATH_DEFAULT")
 
 allow=[
   "*.safetensors",
@@ -65,7 +65,7 @@ fi
 # Patch/normalize rope_scaling by removing it (not needed for 8k)
 python - <<'PY'
 import os, json, glob
-local_dir=os.getenv("MODEL_PATH_DEFAULT","/workspace/orpheus-tts/model")
+local_dir=os.getenv("MODEL_PATH_DEFAULT")
 changed=False
 for p in glob.glob(local_dir+"/**/config.json", recursive=True):
     try:
@@ -88,16 +88,15 @@ python - <<'PY'
 import os
 from huggingface_hub import snapshot_download
 token=os.getenv("HUGGING_FACE_HUB_TOKEN") or os.getenv("HF_TOKEN")
-snac_dir="/workspace/orpheus-tts/snac_model"
+snac_dir=os.getenv("SNAC_DIR","__SNAC_DIR__")
 snapshot_download(repo_id="hubertsiuzdak/snac_24khz", token=token,
                   local_dir=snac_dir, local_dir_use_symlinks=False)
 print("[prepare_model] SNAC downloaded to", snac_dir)
 PY
 
 # Persist SNAC path
-if ! grep -q '^SNAC_MODEL_PATH=' .env 2>/dev/null; then
-  echo "SNAC_MODEL_PATH=/workspace/orpheus-tts/snac_model" >> .env
-fi
+sed -i '/^SNAC_MODEL_PATH=/d' .env || true
+echo "SNAC_MODEL_PATH=$ROOT_DIR/snac_model" >> .env
 
 # Persist env to use local model and offline mode
 if ! grep -q '^MODEL_NAME=' .env 2>/dev/null || [[ "${MODEL_NAME:-}" != "$MODEL_PATH_DEFAULT" ]]; then

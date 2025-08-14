@@ -15,9 +15,13 @@ if [[ ${1:-} == "--delete-repo" ]]; then
   DELETE_REPO=true
 fi
 
-echo "[purge] Removing runtime dir and caches..."
+echo "[purge] Removing in-repo runtime dirs (venv, model, snac_model, cache, logs) and caches..."
 rm -rf \
-  "$WORK/orpheus-tts" \
+  "$REPO_DIR/venv" \
+  "$REPO_DIR/model" \
+  "$REPO_DIR/snac_model" \
+  "$REPO_DIR/cache" \
+  "$REPO_DIR/logs" \
   "$WORK/.cache/huggingface" \
   "$WORK/hf" \
   "$HOME/.cache/huggingface" \

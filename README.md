@@ -58,9 +58,30 @@ http://localhost:8000/docs
 - num_predict: 49152
 - N_EXTRA_AFTER_EOT: 8192
 
-## Deployment
+## Deployment (RunPod)
 
-See [RUNPOD_DEPLOYMENT.md](RUNPOD_DEPLOYMENT.md) for RunPod instructions and one-shot scripts.
+Quick one-shot:
+```bash
+cd /workspace
+git clone https://github.com/yourusername/yap-voice-model-deployment.git
+cd yap-voice-model-deployment
+export HF_TOKEN=hf_xxx; export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+bash scripts/fresh_install.sh
+bash scripts/start.sh &
+```
+
+Manual:
+```bash
+bash scripts/setup.sh
+bash scripts/start.sh
+source venv/bin/activate && python warmup.py --save
+```
+
+Token setup:
+```bash
+export HF_TOKEN=hf_xxx
+export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
+```
 
 ## Configuration (.env)
 
@@ -78,7 +99,7 @@ See [RUNPOD_DEPLOYMENT.md](RUNPOD_DEPLOYMENT.md) for RunPod instructions and one
 
 ## Requirements
 
-See `requirements.txt` (tested with PyTorch 2.4.x cu121, vLLM 0.4.0).
+See `requirements.txt` (vLLM 0.10.0, torch 2.7.1). 
 
 ## Acknowledgements
 
