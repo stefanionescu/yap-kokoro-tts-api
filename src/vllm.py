@@ -64,11 +64,10 @@ class OrpheusModel:
                 max_num_batched_tokens=self.max_num_batched_tokens,
                 max_num_seqs=self.max_num_seqs,
                 enable_chunked_prefill=self.enable_chunked_prefill,
-                # Auth for gated HF models
+                # Auth for gated HF models and runtime code
                 trust_remote_code=True,
                 tokenizer_mode="auto",
                 download_dir=os.getenv("HF_HOME"),
-                enforce_eager=True,
             )
             logger.info(f"vLLM engine args: model={self.model_name}, quantization={self.quantization}, max_model_len={self.max_model_len}")
             return AsyncLLMEngine.from_engine_args(engine_args)

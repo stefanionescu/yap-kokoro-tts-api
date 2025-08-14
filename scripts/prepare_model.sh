@@ -11,6 +11,8 @@ source .env || true
 
 MODEL_PATH_DEFAULT="$ROOT_DIR/model"
 HF_REPO=${MODEL_NAME:-canopylabs/orpheus-3b-0.1-ft}
+# Allow override of DSFP bits; default to 6 for FP6
+DSFP_BITS=${DSFP_BITS:-6}
 
 # Temporarily force online mode for downloads
 PREV_HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-}
@@ -25,14 +27,16 @@ if [[ -z "${VIRTUAL_ENV:-}" ]]; then
   source venv/bin/activate
 fi
 
-if [[ ! -d "$HF_REPO" ]]; then
+export MODEL_LOCAL_DIR="$MODEL_PATH_DEFAULT"
+
+if [[ ! -d "$MODEL_PATH_DEFAULT" || -z "$(ls -A "$MODEL_PATH_DEFAULT" 2>/dev/null)" ]]; then
 python - <<'PY'
 import os
 from huggingface_hub import snapshot_download
 
 repo=os.getenv("MODEL_NAME","canopylabs/orpheus-3b-0.1-ft")
 token=os.getenv("HUGGING_FACE_HUB_TOKEN") or os.getenv("HF_TOKEN")
-local_dir=os.getenv("MODEL_PATH_DEFAULT")
+local_dir=os.getenv("MODEL_LOCAL_DIR")
 
 allow=[
   "*.safetensors",
@@ -59,13 +63,13 @@ snapshot_download(repo_id=repo, token=token, local_dir=local_dir,
 print("[prepare_model] Downloaded only inference files to", local_dir)
 PY
 else
-  echo "[prepare_model] Local model directory detected: $HF_REPO"
+  echo "[prepare_model] Using existing local model directory: $MODEL_PATH_DEFAULT"
 fi
 
 # Patch/normalize rope_scaling by removing it (not needed for 8k)
 python - <<'PY'
 import os, json, glob
-local_dir=os.getenv("MODEL_PATH_DEFAULT")
+local_dir=os.getenv("MODEL_LOCAL_DIR")
 changed=False
 for p in glob.glob(local_dir+"/**/config.json", recursive=True):
     try:
@@ -82,6 +86,16 @@ for p in glob.glob(local_dir+"/**/config.json", recursive=True):
         print("[prepare_model] Skip", p, e)
 print("[prepare_model] Patch complete; changed:", changed)
 PY
+
+# Write deepspeedfp runtime quantization config next to the local model
+cat > "$MODEL_PATH_DEFAULT/quant_config.json" <<JSON
+{
+  "quant_method": "deepspeedfp",
+  "bits": $DSFP_BITS,
+  "group_size": 512
+}
+JSON
+echo "[prepare_model] Wrote DeepSpeedFP quant_config.json (bits=$DSFP_BITS) to $MODEL_PATH_DEFAULT"
 
 # Also prepare SNAC locally to avoid online fetches (always attempt; idempotent)
 python - <<'PY'
@@ -103,6 +117,10 @@ if ! grep -q '^MODEL_NAME=' .env 2>/dev/null || [[ "${MODEL_NAME:-}" != "$MODEL_
   sed -i '/^MODEL_NAME=/d' .env || true
   echo "MODEL_NAME=$MODEL_PATH_DEFAULT" >> .env
 fi
+
+# Ensure QUANTIZATION is set to deepspeedfp so vLLM engages DSFP runtime
+sed -i '/^QUANTIZATION=/d' .env || true
+echo "QUANTIZATION=deepspeedfp" >> .env
 
 # Restore offline mode and persist
 export TRANSFORMERS_OFFLINE=1

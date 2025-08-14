@@ -7,8 +7,6 @@ from src.vllm import OrpheusModel
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 import logging
-import json
-import base64
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
@@ -16,7 +14,6 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import warnings
-import asyncio
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
@@ -27,12 +24,12 @@ logger = logging.getLogger(__name__)
 
 class TTSRequest(BaseModel):
     input: str = "Hey there, looks like you forgot to provide a prompt!"
-    voice: str = "tara"
+    voice: str = "female"
 
 
 class TTSStreamRequest(BaseModel):
     input: str
-    voice: str = "tara"
+    voice: str = "female"
     continue_: bool = Field(True, alias="continue")
     segment_id: str
 
@@ -61,10 +58,10 @@ async def lifespan(app: FastAPI):
     
     # Get configuration from environment variables
     model_name = os.getenv("MODEL_NAME", "canopylabs/orpheus-3b-0.1-ft")
-    max_model_len = int(os.getenv("TRT_MAX_INPUT_LEN", "1024"))
-    max_seq_len = int(os.getenv("TRT_MAX_SEQ_LEN", "2048"))
+    max_model_len = int(os.getenv("TRT_MAX_INPUT_LEN", "8192"))
+    max_seq_len = int(os.getenv("TRT_MAX_SEQ_LEN", "8192"))
     gpu_utilization = float(os.getenv("GPU_MEMORY_UTILIZATION", "0.9"))
-    quantization = os.getenv("QUANTIZATION", "awq")  # Using AWQ for 6-bit quantization
+    quantization = os.getenv("QUANTIZATION", "deepspeedfp")
     
     # Voice-specific parameters
     # These will be used as defaults but can be overridden in API calls
@@ -95,8 +92,8 @@ async def lifespan(app: FastAPI):
     
     # Define gender for the available voices
     voice_genders = {
-        "tara": "female",
-        "zac": "male"
+        "female": "female",
+        "male": "male"
     }
 
     # Dynamically generate voice details from the loaded engine
@@ -178,7 +175,7 @@ async def tts_stream_ws(websocket: WebSocket):
                 logger.info("Empty or whitespace-only input received, skipping audio generation.")
                 continue
 
-            voice = data.get("voice", "tara")
+            voice = data.get("voice", "female")
             segment_id = data.get("segment_id", "no_segment_id")
             
             # Apply voice-specific settings
@@ -237,7 +234,7 @@ async def tts_stream_ws(websocket: WebSocket):
 @app.get("/api/voices", response_model=VoicesResponse)
 async def get_voices():
     """Get available voices with detailed information."""
-    default_voice = engine.available_voices[0] if engine and engine.available_voices else "tara"
+    default_voice = engine.available_voices[0] if engine and engine.available_voices else "female"
     return {
         "voices": VOICE_DETAILS,
         "default": default_voice,
