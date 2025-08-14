@@ -55,14 +55,12 @@ if [[ -s "$PGID_FILE" ]]; then
   kill_group "$PGID"
   rm -f "$PGID_FILE" "$PID_FILE"
 else
-  # 2) Fallback: discover listener PID on :PORT and kill its group
-  PID=$(ss -ltnp 2>/dev/null | awk -v p=":$PORT" '$4 ~ p {match($NF,/pid=([0-9]+)/,m); if(m[1]) {print m[1]; exit}}')
-  if [[ -n "${PID:-}" ]]; then
-    PGID=$(ps -o pgid= -p "$PID" | tr -d ' ')
-    kill_group "$PGID"
-  else
-    echo "[purge] No uvicorn/vLLM listener found on :$PORT"
-  fi
+  # 2) Fallback: no PGID recorded; do a safe, targeted pkill (no console impact)
+  echo "[purge] No recorded PGID; stopping uvicorn/vLLM via pkill"
+  pkill -f uvicorn || true
+  pkill -f "python .*main.py" || true
+  pkill -f "python -m vllm" || true
+  pkill -f vllm || true
 fi
 
 # 3) DO NOT broad-pkill here. Keep the console alive.
