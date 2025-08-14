@@ -1,6 +1,8 @@
 import os
 import subprocess
 import sys
+import importlib.util
+from pathlib import Path
 
 # Source (FP16/BF16) model directory downloaded by 01_fetch.py
 SRC = os.environ.get("SRC", "./base_model")
@@ -19,6 +21,27 @@ EXPORTER_CANDIDATES = [
     # CLI form
     "llmcompressor export deepspeedfp",
 ]
+
+def _discover_exporter_file_candidates() -> list[str]:
+    candidates: list[str] = []
+    # Prefer vendored repo path if provided by caller
+    vendor_repo = os.environ.get("VENDOR_REPO")
+    search_roots: list[Path] = []
+    if vendor_repo and os.path.isdir(vendor_repo):
+        search_roots.append(Path(vendor_repo))
+    # Also search installed package location
+    spec = importlib.util.find_spec("llmcompressor")
+    if spec and spec.origin:
+        pkg_dir = Path(spec.origin).parent
+        search_roots.append(pkg_dir)
+    # Walk and collect plausible script files
+    name_hints = ("deepspeed", "dsfp")
+    for root in search_roots:
+        for p in root.rglob("*.py"):
+            n = p.name.lower()
+            if any(h in n for h in name_hints) and ("export" in str(p.parent).lower() or "export" in n):
+                candidates.append(str(p))
+    return candidates
 
 
 def main() -> None:
@@ -39,6 +62,11 @@ def main() -> None:
     candidates.extend(EXPORTER_CANDIDATES)
 
     last_err = None
+
+    # Add file path candidates discovered dynamically (run as `python <file> ...`)
+    file_candidates = _discover_exporter_file_candidates()
+    for fc in file_candidates:
+        candidates.insert(0, f"python {fc}")
     for base_cmd in candidates:
         cmd = (
             f"{base_cmd} "

@@ -110,6 +110,9 @@ elif [[ -f "$VENDOR_REPO/llmcompressor/scripts/export/deepspeedfp.py" ]]; then
   export DSFP_EXPORT_CMD="python $VENDOR_REPO/llmcompressor/scripts/export/deepspeedfp.py"
 fi
 
+# Hint the exporter about where the vendor repo is
+export VENDOR_REPO="$VENDOR_REPO"
+
 echo "[run_all_dsfp] Step 2: Export DeepSpeedFP (FP6) weights -> $EXPORT_DIR"
 SRC="$FETCH_DIR" OUT="$EXPORT_DIR" python 02_dsfp_export.py
 
