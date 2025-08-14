@@ -87,15 +87,15 @@ for p in glob.glob(local_dir+"/**/config.json", recursive=True):
 print("[prepare_model] Patch complete; changed:", changed)
 PY
 
-# Write deepspeedfp runtime quantization config next to the local model
-# DSFP in vLLM does not accept group_size; keep config minimal
+# Write DSFP runtime quantization config next to the local model.
+# vLLM expects 'bits' and requires 'group_size' to be present. Do not include 'quant_method'.
 cat > "$MODEL_PATH_DEFAULT/quant_config.json" <<JSON
 {
-  "quant_method": "deepspeedfp",
-  "bits": $DSFP_BITS
+  "bits": $DSFP_BITS,
+  "group_size": 512
 }
 JSON
-echo "[prepare_model] Wrote DeepSpeedFP quant_config.json (bits=$DSFP_BITS) to $MODEL_PATH_DEFAULT"
+echo "[prepare_model] Wrote DSFP quant_config.json (bits=$DSFP_BITS, group_size=512) to $MODEL_PATH_DEFAULT"
 
 # Also prepare SNAC locally to avoid online fetches (always attempt; idempotent)
 python - <<'PY'
