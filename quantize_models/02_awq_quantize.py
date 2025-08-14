@@ -8,6 +8,10 @@ OUT = os.environ.get("OUT", "./awq_model")
 def main():
     os.makedirs(OUT, exist_ok=True)
     print(f"Loading base model from: {SRC}")
+    # Ensure index exists (sharded checkpoints)
+    idx = os.path.join(SRC, "model.safetensors.index.json")
+    if not os.path.exists(idx):
+        raise SystemExit(f"Missing {idx}. Re-run 01_fetch.py or set SRC correctly.")
     model = AutoAWQForCausalLM.from_pretrained(SRC, device_map="auto", torch_dtype="auto")
     tok = AutoTokenizer.from_pretrained(SRC, use_fast=True)
 

@@ -13,6 +13,7 @@ def main():
         local_dir_use_symlinks=False,
         allow_patterns=[
             "*.safetensors",
+            "model.safetensors.index.json",
             "config.json",
             "generation_config.json",
             "tokenizer.json",
