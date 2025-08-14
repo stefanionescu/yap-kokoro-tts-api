@@ -37,7 +37,18 @@ def main():
     if args.api_key:
         headers["X-API-Key"] = args.api_key
 
-    payload = {"input": args.text, "voice": args.voice}
+    # Require explicit sampling params
+    if args.voice == "female":
+        temperature, top_p, rep = 0.5, 0.95, 1.15
+    else:
+        temperature, top_p, rep = 0.3, 0.95, 1.12
+    payload = {
+        "input": args.text,
+        "voice": args.voice,
+        "temperature": temperature,
+        "top_p": top_p,
+        "repetition_penalty": rep,
+    }
 
     print(f"Calling {url}…")
     t0 = time.time()

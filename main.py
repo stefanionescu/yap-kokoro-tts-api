@@ -27,11 +27,17 @@ logger = logging.getLogger(__name__)
 class TTSRequest(BaseModel):
     input: str = "Hey there, looks like you forgot to provide a prompt!"
     voice: str = "female"
+    temperature: float
+    top_p: float
+    repetition_penalty: float
 
 
 class TTSStreamRequest(BaseModel):
     input: str
     voice: str = "female"
+    temperature: float
+    top_p: float
+    repetition_penalty: float
     continue_: bool = Field(True, alias="continue")
     segment_id: str
 
@@ -123,7 +129,7 @@ async def lifespan(app: FastAPI):
                     prompt=prompt_hint,
                     voice=voice_hint,
                     temperature=0.0,
-                    top_p=0.0,
+                    top_p=1.0,
                     repetition_penalty=1.0,
                     max_tokens=1,
                 )
@@ -160,10 +166,10 @@ async def tts_stream(data: TTSRequest):
     start_time = time.perf_counter()
     voice = data.voice
     
-    # Apply voice-specific settings based on the selected voice
-    temperature = None  # Use voice-specific default from the model
-    top_p = None        # Use voice-specific default from the model
-    repetition_penalty = None  # Use voice-specific default from the model
+    # Required sampling params from request
+    temperature = data.temperature
+    top_p = data.top_p
+    repetition_penalty = data.repetition_penalty
     num_ctx = int(os.getenv("NUM_CTX", "8192"))
     num_predict = int(os.getenv("NUM_PREDICT", "49152"))
     
@@ -225,10 +231,13 @@ async def tts_stream_ws(websocket: WebSocket):
             voice = data.get("voice", "female")
             segment_id = data.get("segment_id", "no_segment_id")
             
-            # Apply voice-specific settings (use model defaults for honesty)
-            temperature = None
-            top_p = None
-            repetition_penalty = None
+            # Require explicit sampling params from WS message
+            if "temperature" not in data or "top_p" not in data or "repetition_penalty" not in data:
+                await websocket.send_json({"error": "Missing required parameters: temperature, top_p, repetition_penalty", "done": True})
+                break
+            temperature = float(data.get("temperature"))
+            top_p = float(data.get("top_p"))
+            repetition_penalty = float(data.get("repetition_penalty"))
             num_ctx = int(os.getenv("NUM_CTX", "8192"))
             num_predict = int(os.getenv("NUM_PREDICT", "49152"))
 

@@ -172,21 +172,9 @@ class OrpheusModel:
         # Map external voice to internal model voice
         model_voice = self._voice_mapping.get(voice, "tara")
         
-        # Voice-specific parameters with improved defaults (overridable via env)
-        if voice == "female":
-            if temperature is None:
-                temperature = float(os.getenv("TEMPERATURE_TARA", "0.5"))
-            if top_p is None:
-                top_p = float(os.getenv("TOP_P", "0.95"))
-            if repetition_penalty is None:
-                repetition_penalty = float(os.getenv("REP_PENALTY_TARA", "1.15"))
-        else:  # "male" voice
-            if temperature is None:
-                temperature = float(os.getenv("TEMPERATURE_ZAC", "0.3"))
-            if top_p is None:
-                top_p = float(os.getenv("TOP_P", "0.95"))
-            if repetition_penalty is None:
-                repetition_penalty = float(os.getenv("REP_PENALTY_ZAC", "1.12"))
+        # Enforce presence of sampling params
+        if temperature is None or top_p is None or repetition_penalty is None:
+            raise ValueError("temperature, top_p, and repetition_penalty are required parameters")
             
         logger.info(f"Generating speech for prompt (length: {len(prompt)}), voice: {voice}")
         logger.info(f"Parameters: temp={temperature}, top_p={top_p}, rep_penalty={repetition_penalty}, num_ctx={num_ctx}, num_predict={num_predict}")
@@ -240,6 +228,9 @@ class OrpheusModel:
             Generator yielding audio chunks
         """
         logger.debug("Starting speech generation")
+        # Ensure required sampling params are present
+        if 'temperature' not in kwargs or 'top_p' not in kwargs or 'repetition_penalty' not in kwargs:
+            raise ValueError("temperature, top_p, and repetition_penalty are required parameters")
         return tokens_decoder_sync(self.generate_tokens_sync(**kwargs))
         
     async def generate_speech_async(self, prompt, voice=None, **kwargs):
@@ -261,12 +252,16 @@ class OrpheusModel:
         """
         logger.debug(f"Starting async speech generation for prompt: '{prompt[:20]}...'")
 
-        # Defaults matching Ollama reference
+        # Defaults for context lengths only (sampling must be passed by caller)
         kwargs.setdefault('max_tokens', 49152)
         kwargs.setdefault('num_ctx', 8192)
         kwargs.setdefault('num_predict', 49152)
 
         # Reuse proven sync path end-to-end and consume it without blocking the loop
+        # Validate sampling params exist when generating speech
+        if 'temperature' not in kwargs or 'top_p' not in kwargs or 'repetition_penalty' not in kwargs:
+            raise ValueError("temperature, top_p, and repetition_penalty are required parameters")
+
         sync_audio_gen = self.generate_speech(prompt=prompt, voice=voice, **kwargs)
 
         while True:

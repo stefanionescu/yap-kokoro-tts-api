@@ -4,6 +4,10 @@ Warmup script for Orpheus TTS API.
 Sends a couple of requests to warm up the model for optimal performance.
 """
 import requests
+import asyncio
+import websockets
+import json
+import uuid
 import time
 import os
 import logging
@@ -15,6 +19,107 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+SAMPLE_RATE = 24000  # Hz, SNAC 24kHz mono, 16-bit PCM
+
+def _compute_metrics(total_bytes: int, t0: float, t_first: float, t_end: float):
+    ttfb_ms = (t_first - t0) * 1000.0
+    wall_s = t_end - t0
+    audio_s = total_bytes / (SAMPLE_RATE * 2)  # 2 bytes per 16-bit sample, mono
+    rtf = wall_s / audio_s if audio_s > 0 else float('inf')
+    x_rt = audio_s / wall_s if wall_s > 0 else 0.0
+    kbps = (total_bytes / 1024.0) / wall_s if wall_s > 0 else 0.0
+    return {
+        "ttfb_ms": ttfb_ms,
+        "wall_s": wall_s,
+        "audio_s": audio_s,
+        "rtf": rtf,
+        "x_realtime": x_rt,
+        "kb_per_s": kbps,
+    }
+
+def _voice_params(voice: str):
+    if voice == "female":
+        return 0.5, 0.95, 1.15
+    return 0.3, 0.95, 1.12
+
+def _format_metrics(tag: str, m: dict):
+    return (
+        f"[{tag}] TTFB={m['ttfb_ms']:.0f} ms | time={m['wall_s']:.2f}s | "
+        f"audio={m['audio_s']:.2f}s | RTF={m['rtf']:.2f} | xRT={m['x_realtime']:.2f} | "
+        f"throughput={m['kb_per_s']:.1f} KB/s"
+    )
+
+def _http_measure(base_url: str, text: str, voice: str, save_audio: bool):
+    temperature, top_p, rep = _voice_params(voice)
+    url = f"{base_url}/v1/audio/speech/stream"
+    payload = {
+        "input": text,
+        "voice": voice,
+        "temperature": temperature,
+        "top_p": top_p,
+        "repetition_penalty": rep,
+    }
+    headers = {"Accept-Encoding": "identity", "Cache-Control": "no-store"}
+    t0 = time.time()
+    r = requests.post(url, json=payload, stream=True, headers=headers)
+    r.raise_for_status()
+    first = True
+    total = 0
+    t_first = None
+    for chunk in r.iter_content(chunk_size=1):
+        if not chunk:
+            continue
+        if first:
+            t_first = time.time()
+            first = False
+        total += len(chunk)
+    t_end = time.time()
+    metrics = _compute_metrics(total, t0, t_first or t_end, t_end)
+    if save_audio and total > 0:
+        os.makedirs("warmup_audio", exist_ok=True)
+        out = f"warmup_audio/warmup_http_{voice}.pcm"
+        with open(out, "wb") as f:
+            f.write(b"".join(r.iter_content(chunk_size=None)))
+    return metrics
+
+async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool):
+    temperature, top_p, rep = _voice_params(voice)
+    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
+    seg_id = f"seg-{uuid.uuid4().hex[:8]}"
+    headers = [("Cache-Control", "no-store")]
+    t_first = None
+    total = 0
+    t0 = time.time()
+    async with websockets.connect(ws_url, extra_headers=headers, max_size=None) as ws:
+        await ws.send(json.dumps({
+            "continue": True,
+            "segment_id": seg_id,
+            "input": text,
+            "voice": voice,
+            "temperature": temperature,
+            "top_p": top_p,
+            "repetition_penalty": rep,
+        }))
+
+        # Receive until we get an end message
+        while True:
+            msg = await ws.recv()
+            if isinstance(msg, (bytes, bytearray)):
+                if t_first is None:
+                    t_first = time.time()
+                total += len(msg)
+            else:
+                try:
+                    data = json.loads(msg)
+                except Exception:
+                    continue
+                if isinstance(data, dict) and data.get("type") == "end":
+                    break
+        t_end = time.time()
+    metrics = _compute_metrics(total, t0, t_first or t_end, t_end)
+    # Optionally save: requires capturing all bytes; we skipped to keep memory low
+    return metrics
 
 def warmup_api(host="localhost", port=8000, save_audio=False):
     """Send warmup requests to the API"""
@@ -34,44 +139,23 @@ def warmup_api(host="localhost", port=8000, save_audio=False):
         logger.info("Make sure the API server is running (./start.sh)")
         return False
 
-    # Warmup requests for each voice
+    # Warmup requests for each voice: HTTP then WS
     test_text = "This is a warmup request to optimize the text-to-speech model performance."
-    
+
     for voice in ["female", "male"]:
-        logger.info(f"Sending warmup request with voice '{voice}'...")
+        logger.info(f"[HTTP] {voice}: starting…")
         try:
-            start_time = time.time()
-            response = requests.post(
-                f"{base_url}/v1/audio/speech/stream",
-                json={"input": test_text, "voice": voice},
-                stream=True,
-                headers={"Accept-Encoding": "identity", "Cache-Control": "no-store"}
-            )
-            
-            # Process the streaming response
-            audio_chunks = bytearray()
-            first_chunk = True
-            
-            for chunk in response.iter_content(chunk_size=1):
-                if first_chunk:
-                    ttfb = time.time() - start_time
-                    logger.info(f"Time to first byte: {ttfb*1000:.0f} ms")
-                    first_chunk = False
-                audio_chunks.extend(chunk)
-            
-            total_time = time.time() - start_time
-            logger.info(f"Voice '{voice}' warmup complete ({len(audio_chunks)} bytes in {total_time:.2f} seconds)")
-            
-            # Save audio file if requested
-            if save_audio:
-                os.makedirs("warmup_audio", exist_ok=True)
-                output_path = f"warmup_audio/warmup_{voice}.pcm"
-                with open(output_path, "wb") as f:
-                    f.write(audio_chunks)
-                logger.info(f"Saved warmup audio to {output_path}")
-                
-        except requests.RequestException as e:
-            logger.error(f"Error during warmup for voice '{voice}': {str(e)}")
+            http_m = _http_measure(base_url, test_text, voice, save_audio)
+            logger.info(_format_metrics(f"HTTP {voice}", http_m))
+        except Exception as e:
+            logger.error(f"[HTTP] Error for voice '{voice}': {e}")
+
+        logger.info(f"[WS] {voice}: starting…")
+        try:
+            ws_m = asyncio.run(_ws_measure_async(base_url, test_text, voice, save_audio))
+            logger.info(_format_metrics(f"WS   {voice}", ws_m))
+        except Exception as e:
+            logger.error(f"[WS] Error for voice '{voice}': {e}")
     
     logger.info("Model warmup completed!")
     return True
