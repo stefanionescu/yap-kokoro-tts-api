@@ -36,6 +36,11 @@ echo "Log level: $LOG_LEVEL"
 echo "Kokoro voices: female=${DEFAULT_VOICE_FEMALE:-aoede}, male=${DEFAULT_VOICE_MALE:-michael}"
 echo "Speed: ${KOKORO_SPEED:-1.0} | Split: ${KOKORO_SPLIT_PATTERN:-\\n+} | Chunk: ${STREAM_CHUNK_SECONDS:-0.5}s"
 
+# Force priming and smaller initial chunks for proxy friendliness unless overridden
+export PRIME_STREAM=${PRIME_STREAM:-1}
+export STREAM_CHUNK_SECONDS=${STREAM_CHUNK_SECONDS:-0.1}
+echo "Priming: $PRIME_STREAM | Stream chunk seconds: $STREAM_CHUNK_SECONDS"
+
 # Optional CUDA reservation/capping
 if [ -n "${KOKORO_DEVICE:-}" ]; then
   echo "Forcing Kokoro device: $KOKORO_DEVICE"

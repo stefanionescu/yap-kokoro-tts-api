@@ -29,3 +29,6 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Test files
+kokoro
