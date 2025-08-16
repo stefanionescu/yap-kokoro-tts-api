@@ -11,11 +11,14 @@ DO_KILL_SESSIONS=false
 DO_DROP_CACHES=false
 DO_CLEAR_SHM=false
 DO_CLEAR_TMP=false
+DO_PURGE_SYSTEM=false
+DO_DOCKER_PRUNE=false
+DO_SELF_REMOVE=false
 
 usage() {
   cat <<EOF
-Usage: $0 [--port N] [--clean-files] [--aggressive] [--gpu-reset] [--kill-jupyter] [--kill-sessions] [--drop-caches] [--clear-shm] [--clear-tmp]
- - Default: stop only the voice server (uvicorn + vLLM children) using server.pgid or :PORT detection.
+Usage: $0 [--port N] [--clean-files] [--aggressive] [--gpu-reset] [--kill-jupyter] [--kill-sessions] [--drop-caches] [--clear-shm] [--clear-tmp] [--purge-system] [--docker-prune] [--self-remove]
+  - Default: stop only the voice server (uvicorn children) using server.pgid or :PORT detection.
 EOF
 }
 
@@ -30,6 +33,9 @@ while [[ $# -gt 0 ]]; do
     --drop-caches) DO_DROP_CACHES=true; shift ;;
     --clear-shm) DO_CLEAR_SHM=true; shift ;;
     --clear-tmp) DO_CLEAR_TMP=true; shift ;;
+    --purge-system) DO_PURGE_SYSTEM=true; shift ;;
+    --docker-prune) DO_DOCKER_PRUNE=true; shift ;;
+    --self-remove) DO_SELF_REMOVE=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1"; usage; exit 1 ;;
   esac
@@ -151,6 +157,39 @@ fi
 if $DO_CLEAR_TMP; then
   echo "[purge] Clearing /tmp of kokoro artifacts"
   rm -rf /tmp/kokoro* 2>/dev/null || true
+fi
+
+# 8) Optional purge of system packages installed by setup.sh (reduces writable layer only)
+if $DO_PURGE_SYSTEM; then
+  if command -v apt-get >/dev/null 2>&1; then
+    echo "[purge] Purging system packages (ffmpeg, espeak-ng, dev libs)"
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y \
+      libsndfile1 ffmpeg libopenmpi-dev python3-venv nano htop espeak-ng || true
+    apt-get autoremove -y --purge || true
+    apt-get autoclean -y || true
+    rm -rf /var/lib/apt/lists/* || true
+  fi
+fi
+
+# 9) Optional container engine prune (if available; usually not inside RunPod image)
+if $DO_DOCKER_PRUNE; then
+  if command -v docker >/dev/null 2>&1; then
+    docker system prune -af || true
+  elif command -v nerdctl >/dev/null 2>&1; then
+    nerdctl system prune -af || true
+  fi
+fi
+
+# 10) Optional self removal via RunPod API (requires RUNPOD_API_KEY and RUNPOD_POD_ID)
+if $DO_SELF_REMOVE; then
+  if [ -n "${RUNPOD_API_KEY:-}" ] && [ -n "${RUNPOD_POD_ID:-}" ]; then
+    echo "[purge] Requesting pod deletion via RunPod API"
+    curl -s -X DELETE \
+      -H "Authorization: Bearer $RUNPOD_API_KEY" \
+      "https://api.runpod.io/v2/pods/$RUNPOD_POD_ID" || true
+  else
+    echo "[purge] --self-remove requested but RUNPOD_API_KEY or RUNPOD_POD_ID missing"
+  fi
 fi
 
 echo "[purge] Done. Disk usage:"
