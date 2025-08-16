@@ -41,8 +41,8 @@ class KokoroEngine:
     def __init__(self, lang_code: Optional[str] = None) -> None:
         self.available_voices = ["female", "male"]
         self._voice_mapping = {
-            "female": os.getenv("DEFAULT_VOICE_FEMALE", "aoede"),
-            "male": os.getenv("DEFAULT_VOICE_MALE", "michael"),
+            "female": os.getenv("DEFAULT_VOICE_FEMALE", "af_aoede"),
+            "male": os.getenv("DEFAULT_VOICE_MALE", "am_michael"),
         }
 
         lang = lang_code or os.getenv("LANG_CODE", "a")  # 'a' = American English
@@ -87,7 +87,8 @@ class KokoroEngine:
             logger.debug("Could not set CUDA memory fraction: %s", e)
 
         # Async job queue and single-worker loop (one process per GPU)
-        self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue()
+        queue_size = int(os.getenv("QUEUE_MAXSIZE", "8"))
+        self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
         self._worker_task: Optional[asyncio.Task] = None
 
     def start_worker(self) -> None:
@@ -139,26 +140,38 @@ class KokoroEngine:
         # Pre-segment to force a tiny first segment for sub-200ms TTFB
         pieces = self._segment_for_fast_ttfb(text)
         def pipeline_for(piece: str):
-            # Allow per-call speed/mapping override via env; kept simple here
-            return self.pipeline(
-                piece,
-                voice=kokoro_voice,
-                speed=self.speed,
-                split_pattern=self.split_pattern,
-            )
+            # Try common Kokoro voice IDs if mapping fails silently
+            try:
+                return self.pipeline(
+                    piece,
+                    voice=kokoro_voice,
+                    speed=self.speed,
+                    split_pattern=self.split_pattern,
+                )
+            except Exception as e:
+                alt_voice = {"female": "af_aoede", "male": "am_michael"}.get(selected_voice, kokoro_voice)
+                logger.warning("primary voice '%s' failed: %s; retrying with '%s'", kokoro_voice, e, alt_voice)
+                return self.pipeline(
+                    piece,
+                    voice=alt_voice,
+                    speed=self.speed,
+                    split_pattern=self.split_pattern,
+                )
 
         if output_format == "pcm":
             for idx, piece in enumerate(pieces):
                 for item in pipeline_for(piece):
                     audio_np = None
+                    # Kokoro-FastAPI returns dicts with key 'audio' (float32 np.ndarray)
                     if isinstance(item, dict):
                         audio_np = item.get("audio") or item.get("wav") or item.get("audio_np")
                     elif isinstance(item, (list, tuple)):
-                        # Assume last element is audio array
+                        # Typical tuple: (text, phonemes, audio)
                         audio_np = item[-1] if item else None
                     elif isinstance(item, np.ndarray):
                         audio_np = item
                     if audio_np is None:
+                        # Unknown format: skip
                         continue
                     for pcm_bytes in self._iter_pcm16_chunks(audio_np):
                         if pcm_bytes:
@@ -235,16 +248,29 @@ class KokoroEngine:
                 f"Voice {voice} is not available. Valid options are: {', '.join(self.available_voices)}"
             )
 
-    def _iter_pcm16_chunks(self, audio: np.ndarray) -> Iterable[bytes]:
+    def _iter_pcm16_chunks(self, audio: object) -> Iterable[bytes]:
+        """Yield PCM16 bytes from various possible audio types.
+
+        Accepts numpy arrays (float), torch tensors, or already-encoded bytes.
+        """
         if audio is None:
             return
-        # Accept numpy arrays or torch tensors; ensure CPU numpy float32
+        # Fast path: already bytes/bytearray (assumed PCM16 mono 24k)
+        if isinstance(audio, (bytes, bytearray)):
+            if self.stream_chunk_samples <= 0:
+                yield bytes(audio)
+                return
+            bytes_per_chunk = self.stream_chunk_samples * 2  # 2 bytes per sample
+            for i in range(0, len(audio), bytes_per_chunk):
+                yield bytes(audio[i : i + bytes_per_chunk])
+            return
+
+        # Convert arrays / tensors to np.float32
         try:
             if isinstance(audio, np.ndarray):
                 arr = audio
             elif 'torch' in str(type(audio)):
                 try:
-                    # Handle torch.Tensor without importing torch here
                     arr = audio.detach().to('cpu').numpy()
                 except Exception:
                     return
@@ -255,14 +281,12 @@ class KokoroEngine:
 
         if arr.size == 0:
             return
-        # Ensure 1D float array
-        audio = np.asarray(arr).astype(np.float32).flatten()
-        if self.stream_chunk_samples <= 0 or audio.size <= self.stream_chunk_samples:
-            yield _float_to_pcm16_bytes(audio)
+        arr = np.asarray(arr).astype(np.float32).flatten()
+        if self.stream_chunk_samples <= 0 or arr.size <= self.stream_chunk_samples:
+            yield _float_to_pcm16_bytes(arr)
             return
-        # Chunk into fixed-size segments for streaming
-        for i in range(0, audio.size, self.stream_chunk_samples):
-            segment = audio[i : i + self.stream_chunk_samples]
+        for i in range(0, arr.size, self.stream_chunk_samples):
+            segment = arr[i : i + self.stream_chunk_samples]
             yield _float_to_pcm16_bytes(segment)
 
     def _segment_for_fast_ttfb(self, text: str) -> list[str]:

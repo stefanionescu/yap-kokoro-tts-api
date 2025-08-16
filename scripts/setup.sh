@@ -64,6 +64,7 @@ PRIME_STREAM=0
 # Optional CUDA knobs
 # KOKORO_DEVICE=cuda
 # KOKORO_GPU_MEMORY_FRACTION=0.90
+# QUEUE_MAXSIZE=8
 EOL
 
 echo "Setup complete! You can now run scripts/start.sh to launch the API server."
