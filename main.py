@@ -3,7 +3,7 @@ setup_logger()
 
 import time
 import os
-from src.vllm import OrpheusModel
+from src.engine import KokoroEngine
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 import contextlib
@@ -27,17 +27,13 @@ logger = logging.getLogger(__name__)
 class TTSRequest(BaseModel):
     input: str = "Hey there, looks like you forgot to provide a prompt!"
     voice: str = "female"
-    temperature: float
-    top_p: float
-    repetition_penalty: float
+    format: str = Field("pcm", description="Output format: pcm (default), opus (experimental)")
 
 
 class TTSStreamRequest(BaseModel):
     input: str
     voice: str = "female"
-    temperature: float
-    top_p: float
-    repetition_penalty: float
+    format: str = Field("pcm", description="Output format: pcm (default), opus (experimental)")
     continue_: bool = Field(True, alias="continue")
     segment_id: str
 
@@ -56,7 +52,7 @@ class VoicesResponse(BaseModel):
     default: str
     count: int
     
-engine: OrpheusModel = None
+engine: KokoroEngine = None
 _keep_hot_task: asyncio.Task | None = None
 VOICE_DETAILS: List[VoiceDetail] = []
 
@@ -66,11 +62,8 @@ async def lifespan(app: FastAPI):
     global engine, VOICE_DETAILS
     
     # Get configuration from environment variables
-    model_name = os.getenv("MODEL_NAME", "canopylabs/orpheus-3b-0.1-ft")
-    max_model_len = int(os.getenv("TRT_MAX_INPUT_LEN", "8192"))
-    max_seq_len = int(os.getenv("TRT_MAX_SEQ_LEN", "8192"))
-    gpu_utilization = float(os.getenv("GPU_MEMORY_UTILIZATION", "0.9"))
-    quantization = os.getenv("QUANTIZATION", "deepspeedfp")
+    model_name = os.getenv("MODEL_NAME", "hexgrad/Kokoro-82M")
+    quantization = os.getenv("QUANTIZATION", "none")
     
     # Retained for API compatibility; Kokoro ignores sampling params
     temperature_tara = float(os.getenv("TEMPERATURE_TARA", "0.8"))
@@ -85,13 +78,9 @@ async def lifespan(app: FastAPI):
     
     logger.info(f"Initializing TTS engine with model={model_name}, quantization={quantization}")
     
-    # Initialize the model
-    engine = OrpheusModel(
-        model_name=model_name,
-        max_model_len=max_seq_len,
-        gpu_memory_utilization=gpu_utilization,
-        quantization=quantization
-    )
+    # Initialize the engine
+    engine = KokoroEngine(lang_code=os.getenv("LANG_CODE", "a"))
+    engine.start_worker()
     
     # Log the configuration
     logger.info(f"Voice settings - female: temp={temperature_tara}, top_p={top_p}, rep_penalty={rep_penalty_tara}")
@@ -165,10 +154,7 @@ async def tts_stream(data: TTSRequest):
     start_time = time.perf_counter()
     voice = data.voice
     
-    # Required sampling params from request
-    temperature = data.temperature
-    top_p = data.top_p
-    repetition_penalty = data.repetition_penalty
+    out_format = data.format.lower() if data.format else "pcm"
     num_ctx = int(os.getenv("NUM_CTX", "8192"))
     num_predict = int(os.getenv("NUM_PREDICT", "49152"))
     
@@ -184,11 +170,7 @@ async def tts_stream(data: TTSRequest):
             audio_generator = engine.generate_speech_async(
                 prompt=data.input,
                 voice=voice,
-                temperature=temperature,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-                num_ctx=num_ctx,
-                num_predict=num_predict
+                output_format=out_format,
             )
 
             async for chunk in audio_generator:
@@ -230,15 +212,7 @@ async def tts_stream_ws(websocket: WebSocket):
             voice = data.get("voice", "female")
             segment_id = data.get("segment_id", "no_segment_id")
             
-            # Require explicit sampling params from WS message
-            if "temperature" not in data or "top_p" not in data or "repetition_penalty" not in data:
-                await websocket.send_json({"error": "Missing required parameters: temperature, top_p, repetition_penalty", "done": True})
-                break
-            temperature = float(data.get("temperature"))
-            top_p = float(data.get("top_p"))
-            repetition_penalty = float(data.get("repetition_penalty"))
-            num_ctx = int(os.getenv("NUM_CTX", "8192"))
-            num_predict = int(os.getenv("NUM_PREDICT", "49152"))
+            out_format = str(data.get("format", "pcm")).lower()
 
             start_time = time.perf_counter()
             try:
@@ -249,11 +223,7 @@ async def tts_stream_ws(websocket: WebSocket):
                     audio_generator = engine.generate_speech_async(
                         prompt=input_text,
                         voice=voice,
-                        temperature=temperature,
-                        top_p=top_p,
-                        repetition_penalty=repetition_penalty,
-                        num_ctx=num_ctx,
-                        num_predict=num_predict
+                        output_format=out_format,
                     )
 
                     first_chunk = True

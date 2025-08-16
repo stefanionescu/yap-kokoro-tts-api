@@ -68,6 +68,7 @@ http://localhost:8000/docs
 ## Audio
 
 - PCM16 mono at 24000 Hz is streamed by default (saved by curl as `.pcm`)
+- OPUS (Ogg/Opus) available by setting `{"format":"opus"}` if `ffmpeg` is installed
 
 ## Deployment (RunPod)
 
@@ -99,7 +100,8 @@ bash scripts/purge_pod.sh --clean-files   # also remove venv/model/cache/logs
 
 - MODEL_NAME (default `hexgrad/Kokoro-82M`), QUANTIZATION=`none`
 - DEFAULT_VOICE_FEMALE=`aoede`, DEFAULT_VOICE_MALE=`michael`, LANG_CODE=`a`
-- KOKORO_SPEED, KOKORO_SPLIT_PATTERN, STREAM_CHUNK_SECONDS
+- KOKORO_SPEED, KOKORO_SPLIT_PATTERN, STREAM_CHUNK_SECONDS (default 0.25)
+- FIRST_SEGMENT_MAX_WORDS (default 10), FIRST_SEGMENT_BOUNDARIES (first-chunk cut; for sub-200ms TTFB)
 - HF_HOME (cache dir)
 
 Runtime envs:
@@ -111,7 +113,7 @@ Notes:
 ## Components
 
 - `main.py` – FastAPI app and endpoints
-- `src/vllm.py` – Kokoro integration and PCM chunking
+- `src/engine.py` – Kokoro integration, fast-TTFB segmentation, PCM/OPUS streaming
 - `src/logger.py` – centralized logging
 
 ## Requirements
