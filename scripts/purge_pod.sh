@@ -8,10 +8,13 @@ DO_AGGRESSIVE=false
 DO_GPU_RESET=false   # resetting GPU can kill other CUDA users; off by default
 DO_KILL_JUPYTER=false
 DO_KILL_SESSIONS=false
+DO_DROP_CACHES=false
+DO_CLEAR_SHM=false
+DO_CLEAR_TMP=false
 
 usage() {
   cat <<EOF
-Usage: $0 [--port N] [--clean-files] [--aggressive] [--gpu-reset] [--kill-jupyter] [--kill-sessions]
+Usage: $0 [--port N] [--clean-files] [--aggressive] [--gpu-reset] [--kill-jupyter] [--kill-sessions] [--drop-caches] [--clear-shm] [--clear-tmp]
  - Default: stop only the voice server (uvicorn + vLLM children) using server.pgid or :PORT detection.
 EOF
 }
@@ -24,6 +27,9 @@ while [[ $# -gt 0 ]]; do
     --gpu-reset) DO_GPU_RESET=true; shift ;;
     --kill-jupyter) DO_KILL_JUPYTER=true; shift ;;
     --kill-sessions) DO_KILL_SESSIONS=true; shift ;;
+    --drop-caches) DO_DROP_CACHES=true; shift ;;
+    --clear-shm) DO_CLEAR_SHM=true; shift ;;
+    --clear-tmp) DO_CLEAR_TMP=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown arg: $1"; usage; exit 1 ;;
   esac
@@ -59,6 +65,16 @@ else
   echo "[purge] No recorded PGID; stopping uvicorn via pkill"
   pkill -f uvicorn || true
   pkill -f "python .*main.py" || true
+  # Also kill any ffmpeg encoders we may have spawned for OPUS
+  pkill -f ffmpeg || true
+  # Kill by listening port as a last resort
+  if command -v ss >/dev/null 2>&1; then
+    PIDS=$(ss -ltnp "sport = :$PORT" 2>/dev/null | awk -F 'pid=' '/pid=/{print $2}' | awk -F ',' '{print $1}' | sort -u)
+    for p in $PIDS; do kill -9 "$p" 2>/dev/null || true; done
+  elif command -v lsof >/dev/null 2>&1; then
+    PIDS=$(lsof -t -iTCP:$PORT -sTCP:LISTEN 2>/dev/null || true)
+    for p in $PIDS; do kill -9 "$p" 2>/dev/null || true; done
+  fi
   # vLLM-specific processes removed in Kokoro setup
 fi
 
@@ -107,10 +123,34 @@ fi
 # 6) Optional GPU reset (kills any remaining CUDA users)
 if $DO_GPU_RESET && command -v nvidia-smi >/dev/null 2>&1; then
   echo "[purge] Attempting GPU reset..."
-  nvidia-smi --query-compute-apps=pid --format=csv,noheader | xargs -r -n1 kill -9 2>/dev/null || true
-  nvidia-smi -pm 0 || true
-  nvidia-smi --gpu-reset -i 0 || true
-  nvidia-smi -pm 1 || true
+  # Kill any remaining compute processes
+  nvidia-smi --query-compute-apps=pid --format=csv,noheader 2>/dev/null | xargs -r -n1 kill -9 2>/dev/null || true
+  # Stop MPS if present
+  if command -v nvidia-cuda-mps-control >/dev/null 2>&1; then
+    echo quit | nvidia-cuda-mps-control 2>/dev/null || true
+  fi
+  # Toggle persistence and reset each detected GPU
+  for IDX in $(nvidia-smi --query-gpu=index --format=csv,noheader 2>/dev/null); do
+    echo "[purge] Resetting GPU $IDX"
+    nvidia-smi -i "$IDX" -pm 0 2>/dev/null || true
+    nvidia-smi --gpu-reset -i "$IDX" 2>/dev/null || true
+    nvidia-smi -i "$IDX" -pm 1 2>/dev/null || true
+  done
+fi
+
+# 7) Optional system cache/shm/tmp cleanup (host-level; may require privileges)
+if $DO_DROP_CACHES; then
+  echo "[purge] Dropping Linux page cache (sync; echo 3 > /proc/sys/vm/drop_caches)"
+  sync || true
+  echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
+fi
+if $DO_CLEAR_SHM; then
+  echo "[purge] Clearing /dev/shm of kokoro/uvicorn artifacts"
+  rm -rf /dev/shm/kokoro* /dev/shm/uvicorn* 2>/dev/null || true
+fi
+if $DO_CLEAR_TMP; then
+  echo "[purge] Clearing /tmp of kokoro artifacts"
+  rm -rf /tmp/kokoro* 2>/dev/null || true
 fi
 
 echo "[purge] Done. Disk usage:"

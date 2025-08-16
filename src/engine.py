@@ -125,6 +125,11 @@ class KokoroEngine:
             selected_voice = "female"
 
         kokoro_voice = self._voice_mapping[selected_voice]
+        # guard against legacy unprefixed IDs in env
+        if kokoro_voice == "aoede":
+            kokoro_voice = "af_aoede"
+        if kokoro_voice == "michael":
+            kokoro_voice = "am_michael"
         text = text or ""
         if not text.strip():
             return
