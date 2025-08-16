@@ -4,6 +4,7 @@ setup_logger()
 import time
 import os
 from src.engine import KokoroEngine
+import torch
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
 import contextlib
@@ -125,7 +126,8 @@ async def tts_stream(data: TTSRequest):
         try:
             # Optional priming to defeat overly aggressive proxy buffering
             if os.getenv("PRIME_STREAM", "0") == "1":
-                yield b"\0" * 128
+                prime_bytes = int(os.getenv("PRIME_BYTES", "512"))
+                yield b"\0" * prime_bytes
 
             # Per-request speed override if provided
             if getattr(data, "speed", None) is not None:
@@ -151,14 +153,15 @@ async def tts_stream(data: TTSRequest):
                 secs = total_bytes / (24000 * 2)
                 logger.info(f"HTTP stream completed: {total_bytes} bytes (~{secs:.2f}s)")
 
-    media_type = 'audio/ogg' if out_format == 'opus' else 'audio/pcm'
+    media_type = 'audio/ogg' if out_format == 'opus' else 'audio/L16; rate=24000; channels=1'
     return StreamingResponse(
         generate_audio_stream(),
         media_type=media_type,
         headers={
             "X-Accel-Buffering": "no",
-            "Cache-Control": "no-store",
+            "Cache-Control": "no-store, no-transform",
             "Content-Type": media_type,
+            "Connection": "keep-alive",
         },
     )
 
@@ -208,6 +211,12 @@ async def tts_stream_ws(websocket: WebSocket):
             segment_index = 0
             try:
                 await websocket.send_json({"type": "start", "segment_id": segment_id})
+                # WS primer
+                if os.getenv("PRIME_STREAM", "0") == "1":
+                    try:
+                        await websocket.send_bytes(b"\0" * int(os.getenv("PRIME_BYTES", "512")))
+                    except Exception:
+                        pass
 
                 if input_text:
                     logger.info(f"WebSocket: Generating audio for input: '{input_text[:50]}...' (length: {len(input_text)})")
@@ -226,12 +235,12 @@ async def tts_stream_ws(websocket: WebSocket):
                         await websocket.send_bytes(chunk)
                         # send meta for each chunk
                         total_samples += len(chunk) // 2  # 2 bytes per sample
-                        await websocket.send_json({
-                            "type": "meta",
-                            "segment": segment_index,
-                            "samples": len(chunk) // 2,
-                            "total_samples": total_samples,
-                        })
+                        if (segment_index % 10) == 0:
+                            await websocket.send_json({
+                                "type": "meta",
+                                "segment": segment_index,
+                                "total_samples": total_samples,
+                            })
                         segment_index += 1
                 else:
                     logger.info("WebSocket: Empty or whitespace-only input received, skipping audio generation.")

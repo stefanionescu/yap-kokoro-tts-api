@@ -116,7 +116,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="7v9iogacp102xj-8000.proxy.runpod.net", help="API host (RunPod proxy host)")
     parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
     parser.add_argument("--voice", choices=["female", "male"], default="female", help="Voice to use")
-    parser.add_argument("--text", default="Hello from Kokoro on RunPod", help="Input text to synthesize")
+    parser.add_argument("--text", default="I would love to suck that juicy dick!", help="Input text to synthesize")
     parser.add_argument("--out", default="hello.wav", help="Output file path (wav/ogg/mp3/pcm)")
     parser.add_argument("--format", choices=["wav", "ogg", "opus", "mp3", "pcm"], default="wav", help="Output format")
     parser.add_argument("--tls", action="store_true", help="Use wss:// (TLS)")

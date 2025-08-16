@@ -41,6 +41,15 @@ export PRIME_STREAM=${PRIME_STREAM:-1}
 export STREAM_CHUNK_SECONDS=${STREAM_CHUNK_SECONDS:-0.1}
 echo "Priming: $PRIME_STREAM | Stream chunk seconds: $STREAM_CHUNK_SECONDS"
 
+# TTFB tuning defaults (overridable)
+export FIRST_SEGMENT_MAX_WORDS=${FIRST_SEGMENT_MAX_WORDS:-3}
+export FIRST_SEGMENT_BOUNDARIES=${FIRST_SEGMENT_BOUNDARIES:-".,?!;:"}
+export MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-12}
+export QUEUE_MAXSIZE=${QUEUE_MAXSIZE:-256}
+export PRIME_BYTES=${PRIME_BYTES:-512}
+echo "First segment max words: $FIRST_SEGMENT_MAX_WORDS | boundaries: $FIRST_SEGMENT_BOUNDARIES"
+echo "Concurrency: $MAX_CONCURRENT_JOBS | Queue size: $QUEUE_MAXSIZE"
+
 # Optional CUDA reservation/capping
 if [ -n "${KOKORO_DEVICE:-}" ]; then
   echo "Forcing Kokoro device: $KOKORO_DEVICE"

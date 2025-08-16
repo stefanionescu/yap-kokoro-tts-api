@@ -79,7 +79,7 @@ class KokoroEngine:
             float(os.getenv("STREAM_CHUNK_SECONDS", "0.25")) * SAMPLE_RATE
         )
         # Fast-TTFB first-segment control
-        self.first_segment_max_words = int(os.getenv("FIRST_SEGMENT_MAX_WORDS", "10"))
+        self.first_segment_max_words = int(os.getenv("FIRST_SEGMENT_MAX_WORDS", "3"))
         self.first_segment_boundary_chars = os.getenv("FIRST_SEGMENT_BOUNDARIES", ".?!,;:-—")
 
         logger.info(
@@ -91,26 +91,45 @@ class KokoroEngine:
             self.stream_chunk_samples,
         )
 
+        # Preload voice packs once to remove first-hit latency
+        try:
+            for v in {self._voice_mapping["female"], self._voice_mapping["male"]}:
+                try:
+                    self.pipeline.load_voice(v)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         # (memory cap already applied above before model init)
 
-        # Async job queue and single-worker loop (one process per GPU)
-        queue_size = int(os.getenv("QUEUE_MAXSIZE", "8"))
+        # Async job queue and worker pool
+        queue_size = int(os.getenv("QUEUE_MAXSIZE", "32"))
         self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
-        self._worker_task: Optional[asyncio.Task] = None
+        self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
+        self._worker_tasks: list[asyncio.Task] = []
 
     def start_worker(self) -> None:
-        if self._worker_task is None or self._worker_task.done():
-            self._worker_task = asyncio.create_task(self._worker_loop())
-            logger.info("Kokoro worker started")
+        # Ensure exactly max_concurrent workers running
+        alive = [t for t in self._worker_tasks if not t.done()]
+        missing = self.max_concurrent - len(alive)
+        for _ in range(max(0, missing)):
+            t = asyncio.create_task(self._worker_loop())
+            alive.append(t)
+        self._worker_tasks = alive
+        if missing > 0:
+            logger.info("Kokoro worker started (%d concurrent)", len(self._worker_tasks))
 
     async def stop_worker(self) -> None:
         try:
-            if self._worker_task and not self._worker_task.done():
-                self._worker_task.cancel()
+            for t in self._worker_tasks:
+                if not t.done():
+                    t.cancel()
+            for t in self._worker_tasks:
                 with contextlib.suppress(Exception):
-                    await self._worker_task
+                    await t
         finally:
-            self._worker_task = None
+            self._worker_tasks = []
 
     async def _worker_loop(self) -> None:
         logger.info("Kokoro worker loop running")

@@ -99,7 +99,7 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
     t0 = time.time()
     audio_buf = bytearray() if save_audio else None
     # Some websockets builds mis-handle extra_headers → avoid passing it
-    async with websockets.connect(ws_url, max_size=None) as ws:
+    async with websockets.connect(ws_url, max_size=None, compression=None) as ws:
         await ws.send(json.dumps({
             "continue": True,
             "segment_id": seg_id,
