@@ -171,39 +171,23 @@ class KokoroEngine:
                 )
 
         if output_format == "pcm":
-            for idx, piece in enumerate(pieces):
-                result = pipeline_for(piece)
-                # Normalize to iterable of outputs
-                if isinstance(result, dict) or isinstance(result, np.ndarray) or isinstance(result, (bytes, bytearray)):
-                    iterator = [result]
-                elif isinstance(result, (list, tuple)):
-                    # Many pipelines return a single tuple (text, phonemes, audio)
-                    iterator = [result]
-                else:
-                    # Assume generator/iterator
-                    iterator = result
-                for out in iterator:
-                    audio_src = None
-                    if isinstance(out, dict):
-                        audio_src = out.get("audio") or out.get("wav") or out.get("audio_np")
-                    elif isinstance(out, (list, tuple)):
-                        audio_src = out[-1] if out else None
-                    elif isinstance(out, (np.ndarray, bytes, bytearray)):
-                        audio_src = out
-                    if audio_src is None:
+            for piece in pieces:
+                # Kokoro v1 yields (gs, ps, audio) tuples; audio is np.ndarray float32
+                for _, _, audio in pipeline_for(piece):
+                    if audio is None:
                         continue
-                    # Ensure we actually produce bytes; if chunking yields nothing, fall back to full buffer
-                    emitted = False
-                    for pcm_bytes in self._iter_pcm16_chunks(audio_src):
-                        if pcm_bytes:
-                            emitted = True
-                            yield pcm_bytes
-                    if not emitted:
-                        # last resort: serialize whole audio
-                        if isinstance(audio_src, (np.ndarray, list, tuple)):
-                            buf = _float_to_pcm16_bytes(np.asarray(audio_src, dtype=np.float32).flatten())
-                            if buf:
-                                yield buf
+                    audio_arr = np.asarray(audio, dtype=np.float32).flatten()
+                    pcm = _float_to_pcm16_bytes(audio_arr)
+                    if not pcm:
+                        continue
+                    if self.stream_chunk_samples > 0:
+                        bpc = self.stream_chunk_samples * 2  # 2 bytes/sample
+                        for i in range(0, len(pcm), bpc):
+                            chunk = pcm[i : i + bpc]
+                            if chunk:
+                                yield chunk
+                    else:
+                        yield pcm
             return
 
         if output_format == "opus" and shutil.which("ffmpeg"):
