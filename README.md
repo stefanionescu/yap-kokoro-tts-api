@@ -86,7 +86,7 @@ Manual:
 bash scripts/setup.sh
 bash scripts/start_bg.sh
 bash scripts/tail_bg_logs.sh
-source venv/bin/activate && python warmup.py --save
+source venv/bin/activate && python test/warmup.py --save
 ```
 
 Stopping and cleaning (keeps web console alive):

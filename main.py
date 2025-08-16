@@ -34,14 +34,12 @@ class TTSRequest(BaseModel):
     # Optional per-request speed override for OpenAI parity
     speed: Optional[float] = Field(None, description="Override speaking speed (e.g., 0.8–1.4)")
 
-
 class TTSStreamRequest(BaseModel):
     input: str
     voice: str = "female"
     format: str = Field("pcm", description="Output format: pcm (default), opus (experimental)")
     continue_: bool = Field(True, alias="continue")
     segment_id: str
-
 
 class VoiceDetail(BaseModel):
     name: str
@@ -50,7 +48,6 @@ class VoiceDetail(BaseModel):
     gender: str
     accent: str
     preview_url: Optional[str] = None
-
 
 class VoicesResponse(BaseModel):
     voices: List[VoiceDetail]
@@ -164,6 +161,7 @@ async def tts_stream(data: TTSRequest):
             "Connection": "keep-alive",
         },
     )
+
 
 @app.post('/v1/audio/speech')
 async def tts_sync(data: TTSRequest):

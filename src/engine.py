@@ -5,8 +5,10 @@ import contextlib
 import subprocess
 import threading
 import shutil
-from typing import AsyncGenerator, Iterable, Optional
+from typing import AsyncGenerator, Iterable, Optional, List
 from dataclasses import dataclass
+import json
+from pathlib import Path
 
 import numpy as np
 from kokoro import KPipeline
@@ -44,6 +46,13 @@ class KokoroEngine:
             "female": os.getenv("DEFAULT_VOICE_FEMALE", "af_aoede"),
             "male": os.getenv("DEFAULT_VOICE_MALE", "am_michael"),
         }
+
+        # Custom voice recipes (e.g., "my_blend": "af_aoede+am_michael")
+        self.custom_dir = Path(os.getenv("CUSTOM_VOICES_DIR", "custom_voices")).resolve()
+        self.custom_dir.mkdir(parents=True, exist_ok=True)
+        self.custom_json_path = self.custom_dir / "custom_voices.json"
+        self._custom_voices: dict[str, str] = {}
+        self._load_custom_voices()
 
         lang = lang_code or os.getenv("LANG_CODE", "a")  # 'a' = American English
         # Device selection and optional memory cap BEFORE model init
@@ -103,11 +112,50 @@ class KokoroEngine:
 
         # (memory cap already applied above before model init)
 
-        # Async job queue and worker pool
+        # Async job queues and worker pool
         queue_size = int(os.getenv("QUEUE_MAXSIZE", "32"))
+        self._pri_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
         self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
         self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
         self._worker_tasks: list[asyncio.Task] = []
+
+        # Extend available voices with custom names
+        self._refresh_available_voices()
+
+    def _load_custom_voices(self) -> None:
+        try:
+            if self.custom_json_path.exists():
+                self._custom_voices = json.loads(self.custom_json_path.read_text(encoding="utf-8")) or {}
+            else:
+                self._custom_voices = {}
+        except Exception:
+            self._custom_voices = {}
+
+    def _save_custom_voices(self) -> None:
+        try:
+            self.custom_json_path.write_text(json.dumps(self._custom_voices, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _refresh_available_voices(self) -> None:
+        names = ["female", "male"] + sorted(list(self._custom_voices.keys()))
+        self.available_voices = names
+
+    def add_custom_voice(self, name: str, recipe: str) -> None:
+        if not name or not recipe:
+            raise ValueError("name and recipe are required")
+        self._custom_voices[name] = recipe
+        self._save_custom_voices()
+        self._refresh_available_voices()
+
+    def remove_custom_voice(self, name: str) -> None:
+        if name in self._custom_voices:
+            self._custom_voices.pop(name, None)
+            self._save_custom_voices()
+            self._refresh_available_voices()
+
+    def list_custom_voices(self) -> dict[str, str]:
+        return dict(self._custom_voices)
 
     def start_worker(self) -> None:
         # Ensure exactly max_concurrent workers running
@@ -134,42 +182,43 @@ class KokoroEngine:
     async def _worker_loop(self) -> None:
         logger.info("Kokoro worker loop running")
         while True:
-            job = await self._job_queue.get()
+            # Priority queue first for first-chunk jobs
+            if not self._pri_queue.empty():
+                job = await self._pri_queue.get()
+                from_pri = True
+            else:
+                job = await self._job_queue.get()
+                from_pri = False
             try:
-                async for chunk in self._synthesize_stream(job.text, job.voice, job.output_format):
+                async for chunk in self._synthesize_stream_pieces(job.pieces, job.voice, job.output_format):
                     await job.out_queue.put(chunk)
             except Exception as e:
                 logger.exception("Worker error: %s", e)
                 # signal error by closing stream
             finally:
-                await job.out_queue.put(None)  # sentinel
-                self._job_queue.task_done()
+                if job.end_stream:
+                    await job.out_queue.put(None)  # sentinel
+                try:
+                    (self._pri_queue if from_pri else self._job_queue).task_done()
+                except Exception:
+                    pass
 
-    async def _synthesize_stream(self, text: str, voice: str, output_format: str) -> AsyncGenerator[bytes, None]:
+    async def _synthesize_stream_pieces(self, pieces: List[str], voice: str, output_format: str) -> AsyncGenerator[bytes, None]:
         selected_voice = voice or "female"
         if selected_voice not in self.available_voices:
             selected_voice = "female"
 
-        kokoro_voice = self._voice_mapping[selected_voice]
+        # Map API voice to Kokoro voice string (built-in or custom recipe)
+        if selected_voice in self._custom_voices:
+            kokoro_voice = self._custom_voices[selected_voice]
+        else:
+            kokoro_voice = self._voice_mapping.get(selected_voice, selected_voice)
         # guard against legacy unprefixed IDs in env
         if kokoro_voice == "aoede":
             kokoro_voice = "af_aoede"
         if kokoro_voice == "michael":
             kokoro_voice = "am_michael"
-        text = text or ""
-        if not text.strip():
-            return
 
-        logger.info(
-            "Kokoro generating | voice=%s (%s) text_len=%d format=%s",
-            selected_voice,
-            kokoro_voice,
-            len(text),
-            output_format,
-        )
-
-        # Pre-segment to force a tiny first segment for sub-200ms TTFB
-        pieces = self._segment_for_fast_ttfb(text)
         def pipeline_for(piece: str):
             # Try common Kokoro voice IDs if mapping fails silently
             try:
@@ -242,6 +291,7 @@ class KokoroEngine:
             for _, _, audio_np in pipeline_for(piece):
                 for pcm_bytes in self._iter_pcm16_chunks(audio_np):
                     yield pcm_bytes
+
 
     def _opus_encode_via_ffmpeg(self, pcm_iter: Iterable[bytes]) -> Iterable[bytes]:
         """Encode PCM16 mono 24kHz to Ogg Opus using ffmpeg subprocess."""
@@ -366,8 +416,13 @@ class KokoroEngine:
         self.start_worker()
 
         out_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=32)
-        job = _TTSJob(text=prompt or "", voice=voice or "female", output_format=output_format, out_queue=out_q)
-        await self._job_queue.put(job)
+        text = (prompt or "").strip()
+        pieces = self._segment_for_fast_ttfb(text)
+        first = [pieces[0]] if pieces else []
+        rest = pieces[1:] if len(pieces) > 1 else []
+        await self._pri_queue.put(_TTSJob(pieces=first, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=(len(rest)==0), priority=True))
+        if rest:
+            await self._job_queue.put(_TTSJob(pieces=rest, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=True, priority=False))
 
         while True:
             chunk = await out_q.get()
@@ -411,9 +466,11 @@ class KokoroEngine:
 
 @dataclass
 class _TTSJob:
-    text: str
+    pieces: List[str]
     voice: str
     output_format: str
     out_queue: asyncio.Queue
+    end_stream: bool
+    priority: bool
 
 
