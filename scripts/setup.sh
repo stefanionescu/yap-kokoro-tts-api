@@ -6,11 +6,15 @@ SCRIPT_DIR=$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(dirname "$SCRIPT_DIR")
 cd "$ROOT_DIR"
 
-echo "Setting up Orpheus TTS deployment environment..."
+echo "Setting up Kokoro TTS deployment environment..."
 
 echo "Updating system packages..."
-apt-get update
-apt-get install -y libsndfile1 ffmpeg libopenmpi-dev python3-venv nano htop
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update
+  apt-get install -y libsndfile1 ffmpeg libopenmpi-dev python3-venv nano htop espeak-ng
+else
+  echo "apt-get not found (likely macOS). Please ensure espeak-ng is installed if needed."
+fi
 
 echo "Creating virtual environment..."
 python3 -m venv venv
@@ -20,53 +24,31 @@ echo "Installing Python dependencies..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# Install lightweight deepspeed needed by vLLM DSFP importer (no CUDA kernels)
-pip uninstall -y deepspeed || true
-DS_BUILD_OPS=0 DS_BUILD_AIO=0 DS_BUILD_SPARSE_ATTN=0 \
-  pip install deepspeed==0.14.4 --no-build-isolation --no-cache-dir
-python - <<'PY'
-import deepspeed
-print('[setup] deepspeed', deepspeed.__version__)
-PY
-
 mkdir -p logs cache
 
 echo "Setting up environment variables..."
 echo ""
-QUANT_METHOD="deepspeedfp"
-echo "Quantization method fixed to DeepSpeed FP6/FP8 (deepspeedfp)"
+echo "Quantization disabled (not applicable to Kokoro)"
 
 cat > .env << EOL
 # Model configuration
-MODEL_NAME=canopylabs/orpheus-3b-0.1-ft
-QUANTIZATION=$QUANT_METHOD
+MODEL_NAME=hexgrad/Kokoro-82M
+QUANTIZATION=none
 LOG_LEVEL=INFO
 
-# VLLM parameters
 GPU_MEMORY_UTILIZATION=0.9
-# For compatibility with main.py which reads TRT_* envs
-TRT_MAX_INPUT_LEN=8192
-TRT_MAX_SEQ_LEN=8192
-MAX_NUM_BATCHED_TOKENS=8192
-MAX_NUM_SEQS=4
-ENABLE_CHUNKED_PREFILL=True
-VLLM_DISABLE_MULTIMODAL=1
 
-# Voice specific parameters (latency-friendly defaults)
-TEMPERATURE_TARA=0.5
-TEMPERATURE_ZAC=0.3
-TOP_P=0.95
-REP_PENALTY_TARA=1.15
-REP_PENALTY_ZAC=1.12
+# Kokoro voice mapping
+DEFAULT_VOICE_FEMALE=aoede
+DEFAULT_VOICE_MALE=michael
+LANG_CODE=a
+KOKORO_SPEED=1.0
+KOKORO_SPLIT_PATTERN=\n+
+STREAM_CHUNK_SECONDS=0.5
 
-# Context parameters (for long-form text)
+# Context parameters (not used by Kokoro, kept for API compat logging)
 NUM_CTX=8192
 NUM_PREDICT=49152
-
-# Sampling parameters - matching Ollama reference implementation
-MAX_TOKENS=49152
-STOP_TOKEN_IDS=128258
-N_EXTRA_AFTER_EOT=8192
 
 # HuggingFace cache directory (for model downloads)
 HF_HOME=
@@ -76,7 +58,7 @@ HF_HOME=
 # export HF_TOKEN in the shell environment.
 HF_TOKEN=
 
-# Keep GPU kernels hot between requests
+# Keep-hot (has no effect for Kokoro but safe to keep)
 KEEP_GPU_HOT_INTERVAL=20
 KEEP_GPU_HOT_VOICE=male
 KEEP_GPU_HOT_PROMPT=.

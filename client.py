@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Simple local client to call the remote Orpheus TTS API and save streamed audio.
+Simple local client to call the remote Kokoro TTS API and save streamed audio.
 
 Usage examples:
   python client.py --host <RUNPOD_PUBLIC_IP> --port 8000 \
@@ -17,7 +17,7 @@ import requests
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Call remote Orpheus TTS API and save streamed audio")
+    parser = argparse.ArgumentParser(description="Call remote Kokoro TTS API and save streamed audio")
     parser.add_argument("--host", default="localhost", help="API host (RunPod public IP or hostname)")
     parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
     parser.add_argument("--voice", choices=["female", "male"], default="female", help="Voice to use")

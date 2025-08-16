@@ -30,25 +30,11 @@ fi
 PORT=${PORT:-8000}
 HOST=${HOST:-"0.0.0.0"}
 
-echo "Starting Orpheus TTS API server on $HOST:$PORT..."
-if [ "$QUANTIZATION" = "deepspeedfp" ]; then
-    echo "Model: $MODEL_NAME with DeepSpeed FP6/FP8 quantization (optimized for L40S)"
-else
-    echo "Model: $MODEL_NAME with $QUANTIZATION quantization"
-fi
+echo "Starting Kokoro TTS API server on $HOST:$PORT..."
+echo "Model: $MODEL_NAME (quantization: $QUANTIZATION)"
 echo "Log level: $LOG_LEVEL"
-echo "Voice settings:"
-echo " - tara (female): temperature=$TEMPERATURE_TARA, top_p=$TOP_P, repetition_penalty=$REP_PENALTY_TARA"
-echo " - zac (male): temperature=$TEMPERATURE_ZAC, top_p=$TOP_P, repetition_penalty=$REP_PENALTY_ZAC"
-echo "Context window: $NUM_CTX, Max prediction: $NUM_PREDICT"
-
-# Force eager/no-compile for DSFP path unless overridden, and set kv-cache dtype
-export TORCH_COMPILE_DISABLE=${TORCH_COMPILE_DISABLE:-1}
-export TORCHDYNAMO_DISABLE=${TORCHDYNAMO_DISABLE:-1}
-export KV_CACHE_DTYPE=${KV_CACHE_DTYPE:-fp8}
-export VLLM_LOGGING_LEVEL=${VLLM_LOGGING_LEVEL:-INFO}
-echo "Torch compile disabled: TORCH_COMPILE_DISABLE=$TORCH_COMPILE_DISABLE, TORCHDYNAMO_DISABLE=$TORCHDYNAMO_DISABLE"
-echo "vLLM KV cache dtype: $KV_CACHE_DTYPE | vLLM logging: $VLLM_LOGGING_LEVEL"
+echo "Kokoro voices: female=${DEFAULT_VOICE_FEMALE:-aoede}, male=${DEFAULT_VOICE_MALE:-michael}"
+echo "Speed: ${KOKORO_SPEED:-1.0} | Split: ${KOKORO_SPLIT_PATTERN:-\\n+} | Chunk: ${STREAM_CHUNK_SECONDS:-0.5}s"
 
 # Export HF tokens for gated models
 if [ -n "$HUGGING_FACE_HUB_TOKEN" ]; then
@@ -63,17 +49,24 @@ if [ -z "${HF_HOME:-}" ]; then
     export HF_HOME="$ROOT_DIR/cache"
 fi
 
-# Prepare local model snapshot (downloads only inference files and removes rope_scaling)
-SNAC_DIR="$ROOT_DIR/snac_model" SNAC_MODEL_PATH="$ROOT_DIR/snac_model" bash "$SCRIPT_DIR/prepare_model.sh"
+# No heavy model prep needed for Kokoro; it will download via pip/hub as needed
 
-# Launch uvicorn in a dedicated process group so we can kill the whole tree by PGID
-setsid bash -lc "uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1 --http httptools --loop uvloop --timeout-keep-alive 120" \
-  > server.log 2>&1 < /dev/null &
-
-SVR_PID=$!
-SVR_PGID=$(ps -o pgid= -p "$SVR_PID" | tr -d ' ')
-echo "$SVR_PID"  > server.pid
-echo "$SVR_PGID" > server.pgid
-echo "[start] server pid=$SVR_PID pgid=$SVR_PGID (logs at server.log)"
+if command -v setsid >/dev/null 2>&1; then
+  # Launch uvicorn in a dedicated process group so we can kill the whole tree by PGID (Linux)
+  setsid bash -lc "uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1 --http httptools --loop uvloop --timeout-keep-alive 120" \
+    > server.log 2>&1 < /dev/null &
+  SVR_PID=$!
+  SVR_PGID=$(ps -o pgid= -p "$SVR_PID" | tr -d ' ')
+  echo "$SVR_PID"  > server.pid
+  echo "$SVR_PGID" > server.pgid
+  echo "[start] server pid=$SVR_PID pgid=$SVR_PGID (logs at server.log)"
+else
+  # macOS fallback without setsid
+  nohup uvicorn main:app --host "$HOST" --port "$PORT" --log-level "${LOG_LEVEL,,}" --workers 1 --http httptools --loop uvloop --timeout-keep-alive 120 \
+    > server.log 2>&1 &
+  SVR_PID=$!
+  echo "$SVR_PID" > server.pid
+  echo "[start] server pid=$SVR_PID (logs at server.log)"
+fi
 
 

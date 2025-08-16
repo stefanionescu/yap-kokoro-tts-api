@@ -1,18 +1,18 @@
-# Orpheus TTS Deployment
+# Kokoro TTS Deployment
 
-FastAPI-based service for [Canopy Labs' Orpheus 3B](https://huggingface.co/canopylabs/orpheus-3b-0.1-ft) using vLLM with 6-bit (DeepSpeed FP6/FP8) quantization and SNAC decoding.
+FastAPI-based service for Kokoro-82M using the official `kokoro` Python package. No quantization or separate decoder required.
 
 ## Features
 
-- 🚀 Optimized performance with DeepSpeed FP6/FP8
-- 🔊 Low-latency PCM streaming (TTFB logged)
-- 🗣️ Voice selector via API: `female` or `male` (internally mapped to Tara/Zac)
+- 🔊 Low-latency PCM16 streaming at 24 kHz (TTFB logged)
+- 🗣️ Voice selector via API: `female` or `male` (mapped to Kokoro voices Aoede/Michael)
 - 🔌 REST and WebSocket endpoints
 - 📝 Centralized logging
 
 ## Prerequisites
 
-- Hugging Face token with access to `canopylabs/orpheus-3b-0.1-ft` (set `HF_TOKEN`)
+- Python 3.10+
+- Optional: espeak-ng (for English OOD fallback and some languages)
 
 ## Quick Start
 
@@ -37,7 +37,7 @@ bash scripts/stop.sh              # stop background server
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech/stream \
   -H "Content-Type: application/json" \
-  -d '{"input":"Hello, this is a test of the Orpheus text-to-speech system.", "voice":"female"}' \
+  -d '{"input":"Hello, this is a test of the Kokoro text-to-speech system.", "voice":"female"}' \
   --output test.pcm
 
 # male voice
@@ -60,16 +60,14 @@ Visit:
 http://localhost:8000/docs
 ```
 
-## Voice Parameters
+## Voices
 
-- female: temperature=0.8, top_p=0.8, repetition_penalty=1.9
-- male:   temperature=0.4, top_p=0.8, repetition_penalty=1.85
+- API voices exposed: `female` → Kokoro voice `aoede` (American), `male` → `michael` (American)
+  - Override via `.env`: `DEFAULT_VOICE_FEMALE`, `DEFAULT_VOICE_MALE`
 
-## Long-form Settings
+## Audio
 
-- num_ctx: 8192
-- num_predict: 49152
-- N_EXTRA_AFTER_EOT: 8192
+- PCM16 mono at 24000 Hz is streamed by default (saved by curl as `.pcm`)
 
 ## Deployment (RunPod)
 
@@ -78,8 +76,7 @@ Quick one-shot:
 cd /workspace
 git clone https://github.com/yourusername/yap-voice-model-deployment.git
 cd yap-voice-model-deployment
-export HF_TOKEN=hf_xxx; export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
-bash scripts/fresh_install.sh
+bash scripts/setup.sh
 bash scripts/start_bg.sh
 ```
 
@@ -98,38 +95,28 @@ bash scripts/purge_pod.sh            # stop server group only (safe)
 bash scripts/purge_pod.sh --clean-files   # also remove venv/model/cache/logs
 ```
 
-Token setup:
-```bash
-export HF_TOKEN=hf_xxx
-export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
-```
-
 ## Configuration (.env)
 
-- MODEL_NAME, QUANTIZATION (`deepspeedfp`)
-- GPU_MEMORY_UTILIZATION, MAX_MODEL_LEN (default 8192)
-- NUM_CTX, NUM_PREDICT, MAX_TOKENS
-- HF_HOME (cache dir), HF_TOKEN (required for gated model)
+- MODEL_NAME (default `hexgrad/Kokoro-82M`), QUANTIZATION=`none`
+- DEFAULT_VOICE_FEMALE=`aoede`, DEFAULT_VOICE_MALE=`michael`, LANG_CODE=`a`
+- KOKORO_SPEED, KOKORO_SPLIT_PATTERN, STREAM_CHUNK_SECONDS
+- HF_HOME (cache dir)
 
-Runtime envs (sensible defaults set by scripts/start.sh):
-- TORCH_COMPILE_DISABLE=1, TORCHDYNAMO_DISABLE=1 (disable Torch compile for DSFP)
-- KV_CACHE_DTYPE=fp8 (smaller KV cache); set to `auto` if you prefer default
-- VLLM_LOGGING_LEVEL=INFO (use DEBUG for detailed logs)
+Runtime envs:
+- None required beyond defaults. `LANG_CODE`, `DEFAULT_VOICE_*`, and `STREAM_CHUNK_SECONDS` can be customized in `.env`.
 
 Notes:
-- DSFP-6 is enabled by `quantization=deepspeedfp` and a `model/quant_config.json` with `{ "bits": 6, "group_size": 512 }` (generated automatically on first start)
-- Voices exposed by API: `female`, `male`
+- The API preserves the same endpoints and payload shape as before, but sampling params are ignored by Kokoro.
 
 ## Components
 
 - `main.py` – FastAPI app and endpoints
-- `src/vllm.py` – vLLM integration (token gen + auth + quantization)
-- `src/decoder.py` – SNAC decoding to PCM
+- `src/vllm.py` – Kokoro integration and PCM chunking
 - `src/logger.py` – centralized logging
 
 ## Requirements
 
-See `requirements.txt` (vLLM 0.10.0, torch 2.7.1).
+See `requirements.txt` (kokoro, misaki[en], torch).
 
 ## Remote client
 
@@ -139,8 +126,7 @@ python client.py --host <RUNPOD_PUBLIC_IP> --port 8000 \
   --text "Hello there" --voice female --out hello.pcm
 ```
 
-## Acknowledgements
+## References
 
-- [Canopy Labs](https://canopylabs.ai/) – Orpheus TTS
-- [vLLM](https://github.com/vllm-project/vllm)
-- [SNAC](https://github.com/hubert-siuzdak/snac/)
+- Kokoro GitHub: [hexgrad/kokoro](https://github.com/hexgrad/kokoro)
+- Kokoro-82M on Hugging Face: [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M)

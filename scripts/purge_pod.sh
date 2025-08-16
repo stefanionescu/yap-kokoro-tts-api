@@ -56,11 +56,10 @@ if [[ -s "$PGID_FILE" ]]; then
   rm -f "$PGID_FILE" "$PID_FILE"
 else
   # 2) Fallback: no PGID recorded; do a safe, targeted pkill (no console impact)
-  echo "[purge] No recorded PGID; stopping uvicorn/vLLM via pkill"
+  echo "[purge] No recorded PGID; stopping uvicorn via pkill"
   pkill -f uvicorn || true
   pkill -f "python .*main.py" || true
-  pkill -f "python -m vllm" || true
-  pkill -f vllm || true
+  # vLLM-specific processes removed in Kokoro setup
 fi
 
 # 3) DO NOT broad-pkill here. Keep the console alive.

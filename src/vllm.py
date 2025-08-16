@@ -1,271 +1,135 @@
 import asyncio
-import torch
-import os
 import logging
-import json
-from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
-from transformers import AutoTokenizer
-import threading
-import queue
-from src.decoder import tokens_decoder_sync
+import os
+from typing import AsyncGenerator, Iterable
+
+import numpy as np
+from kokoro import KPipeline
+
 
 logger = logging.getLogger(__name__)
 
+
+SAMPLE_RATE = 24000  # Kokoro outputs 24 kHz
+
+
+def _float_to_pcm16_bytes(audio: np.ndarray) -> bytes:
+    if audio is None or audio.size == 0:
+        return b""
+    # Ensure float32 in [-1, 1]
+    audio = np.clip(audio.astype(np.float32), -1.0, 1.0)
+    pcm = (audio * 32767.0).round().astype(np.int16)
+    return pcm.tobytes()
+
+
 class OrpheusModel:
-    def __init__(self, model_name="canopylabs/orpheus-3b-0.1-ft", 
-                 tokenizer=None, 
-                 max_model_len=None, 
-                 gpu_memory_utilization=0.9, 
-                 max_num_batched_tokens=8192, 
-                 max_num_seqs=4, 
-                 enable_chunked_prefill=True,
-                 quantization="deepspeedfp"):
-        self.model_name = model_name
-        self.quantization = quantization
-        self.available_voices = ["female", "male"]  # API voice options
-        self._voice_mapping = {"female": "tara", "male": "zac"}  # Internal mapping to model voices
-        # Prefer env overrides to avoid config conflicts
-        env_max_len = os.getenv("TRT_MAX_SEQ_LEN") or os.getenv("MAX_MODEL_LEN")
-        self.max_model_len = int(env_max_len) if env_max_len else (max_model_len or 8192)
-        self.gpu_memory_utilization = gpu_memory_utilization
-        # Allow environment overrides for batching behavior
-        self.max_num_batched_tokens = int(os.getenv("MAX_NUM_BATCHED_TOKENS", str(max_num_batched_tokens)))
-        self.max_num_seqs = int(os.getenv("MAX_NUM_SEQS", str(max_num_seqs)))
-        _ecp = os.getenv("ENABLE_CHUNKED_PREFILL")
-        if _ecp is not None:
-            self.enable_chunked_prefill = _ecp.lower() in {"1", "true", "yes"}
-        else:
-            self.enable_chunked_prefill = enable_chunked_prefill
-        
-        logger.info(f"Initializing OrpheusModel with model={model_name}, quantization={quantization}")
-        self.engine = self._setup_engine()
-        
-        # Use provided tokenizer path or default to model_name
-        tokenizer_path = tokenizer if tokenizer else model_name
-        self.tokenizer = self._load_tokenizer(tokenizer_path)
+    """
+    Wrapper class keeping the same name/API but backed by Kokoro's KPipeline.
+
+    - Exposes available_voices = ["female", "male"] for API compatibility
+    - Maps 'female' → 'aoede' and 'male' → 'michael' by default (env-overridable)
+    - Streams raw PCM16 bytes at 24 kHz
+    """
+
+    def __init__(
+        self,
+        model_name: str | None = None,
+        tokenizer: str | None = None,
+        max_model_len: int | None = None,
+        gpu_memory_utilization: float = 0.9,
+        max_num_batched_tokens: int = 8192,
+        max_num_seqs: int = 4,
+        enable_chunked_prefill: bool = True,
+        quantization: str | None = None,
+    ) -> None:
+        # Public API compatibility fields (unused by Kokoro)
+        self.model_name = model_name or "hexgrad/Kokoro-82M"
+        self.quantization = quantization or "none"
+
+        # API voice options
+        self.available_voices = ["female", "male"]
+        self._voice_mapping = {
+            "female": os.getenv("DEFAULT_VOICE_FEMALE", "aoede"),
+            "male": os.getenv("DEFAULT_VOICE_MALE", "michael"),
+        }
+
+        lang_code = os.getenv("LANG_CODE", "a")  # 'a' = American English
         logger.info(
-            "OrpheusModel initialization complete | batching: tokens=%s, max_seqs=%s, chunked_prefill=%s",
-            self.max_num_batched_tokens,
-            self.max_num_seqs,
-            self.enable_chunked_prefill,
+            "Initializing Kokoro KPipeline | model=%s lang_code=%s", self.model_name, lang_code
         )
-        # Precompute special token text forms once to avoid per-request encode/decode
-        try:
-            self._begin_text = self.tokenizer.decode([128259])  # <|begin_of_text|>
-            self._tail_text = self.tokenizer.decode([128009, 128260, 128261, 128257])
-        except Exception as e:
-            logger.warning(f"Could not precompute special token strings: {e}")
-            self._begin_text = ""
-            self._tail_text = ""
+        # KPipeline downloads/loads weights under the hood when first used
+        self.pipeline = KPipeline(lang_code=lang_code)
 
-    def _load_tokenizer(self, tokenizer_path):
-        """Load tokenizer from local path or HuggingFace hub with optional auth."""
-        logger.info(f"Loading tokenizer from {tokenizer_path}")
-        try:
-            auth_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
-            if os.path.isdir(tokenizer_path):
-                return AutoTokenizer.from_pretrained(tokenizer_path, local_files_only=True, use_auth_token=auth_token)
-            else:
-                return AutoTokenizer.from_pretrained(tokenizer_path, use_auth_token=auth_token)
-        except Exception as e:
-            logger.error(f"Failed to load tokenizer: {e}")
-            raise
-        
-    def _setup_engine(self):
-        logger.info("Setting up vLLM engine")
-        try:
-            # Ensure DSFP quant config exists when using deepspeedfp and local model path
-            if self.quantization == "deepspeedfp" and os.path.isdir(self.model_name):
-                self._ensure_dsfp_quant_config(self.model_name)
+        # Streaming/chunking behavior
+        self.speed = float(os.getenv("KOKORO_SPEED", "1.0"))
+        self.split_pattern = os.getenv("KOKORO_SPLIT_PATTERN", r"\n+")
+        # Stream chunking in samples (defaults to 0.5s)
+        self.stream_chunk_samples = int(
+            float(os.getenv("STREAM_CHUNK_SECONDS", "0.5")) * SAMPLE_RATE
+        )
 
-            # Extended context window to match the user's requirements
-            kv_cache_dtype = os.getenv("KV_CACHE_DTYPE", "auto")
-            engine_args = AsyncEngineArgs(
-                model=self.model_name,
-                quantization=self.quantization,  # Using DeepSpeed FP6/FP8 quantization
-                dtype="bfloat16",
-                max_model_len=self.max_model_len,
-                gpu_memory_utilization=self.gpu_memory_utilization,
-                max_num_batched_tokens=self.max_num_batched_tokens,
-                max_num_seqs=self.max_num_seqs,
-                enable_chunked_prefill=self.enable_chunked_prefill,
-                # Auth for gated HF models and runtime code
-                trust_remote_code=True,
-                tokenizer_mode="auto",
-                download_dir=os.getenv("HF_HOME"),
-                enforce_eager=True,
-                kv_cache_dtype=kv_cache_dtype,
-            )
-            logger.info(f"vLLM engine args: model={self.model_name}, quantization={self.quantization}, dtype=bfloat16, kv_cache_dtype={kv_cache_dtype}, max_model_len={self.max_model_len}")
-            return AsyncLLMEngine.from_engine_args(engine_args)
-        except Exception as e:
-            msg = str(e)
-            # Enforce quantization: with vLLM >= 0.10.0, deepspeedfp should be supported.
-            logger.error(f"Failed to initialize vLLM engine: {e}")
-            raise
+        logger.info(
+            "Kokoro ready | voices: female=%s male=%s | speed=%s split=%s chunk=%d samples",
+            self._voice_mapping["female"],
+            self._voice_mapping["male"],
+            self.speed,
+            self.split_pattern,
+            self.stream_chunk_samples,
+        )
 
-    def _ensure_dsfp_quant_config(self, model_dir: str) -> None:
-        """Ensure a DSFP quant_config.json exists with required fields.
-
-        vLLM 0.10.0 expects 'bits' and 'group_size' for DSFP quantization.
-        Do not set 'quant_method' here; vLLM infers from quantization flag.
-        """
-        try:
-            config_path = os.path.join(model_dir, "quant_config.json")
-            desired_bits = int(os.getenv("DSFP_BITS", "6"))
-            desired_group_size = 512
-
-            need_write = True
-            if os.path.exists(config_path):
-                with open(config_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict) and "bits" in data and "group_size" in data:
-                    # Keep existing if both fields present
-                    need_write = False
-
-            if need_write:
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump({"bits": desired_bits, "group_size": desired_group_size}, f)
-                logger.info(f"Wrote DSFP quant_config.json to {config_path} (bits={desired_bits}, group_size={desired_group_size})")
-        except Exception as e:
-            logger.warning(f"Could not ensure DSFP quant_config.json: {e}")
-    
-    def validate_voice(self, voice):
-        if voice:
-            if voice not in self.available_voices:
-                logger.warning(f"Invalid voice: {voice}. Valid options are: {', '.join(self.available_voices)}")
-                raise ValueError(f"Voice {voice} is not available. Valid options are: {', '.join(self.available_voices)}")
-    
-    def _format_prompt(self, prompt, voice="female"):
-        """Fast string-based prompt formatting using precomputed special token text."""
-        model_voice = self._voice_mapping.get(voice, "tara")
-        logger.debug(f"Formatting prompt with voice: {voice} (maps to model voice: {model_voice})")
-        return f"{self._begin_text}{model_voice}: {prompt}{self._tail_text}"
-
-
-    def generate_tokens_sync(self, prompt, voice=None, request_id=None, temperature=None, top_p=None, max_tokens=49152, stop_token_ids=[128258], repetition_penalty=None, num_ctx=8192, num_predict=49152):
-        """Generate tokens synchronously from the model
-        
-        Args:
-            prompt: The text prompt to convert to speech
-            voice: Voice to use ('female' or 'male')
-            request_id: Unique identifier for the request (if None, one will be generated)
-            temperature: Sampling temperature (lower = more deterministic)
-            top_p: Nucleus sampling parameter
-            max_tokens: Maximum number of tokens to generate (default: 49152 to match Ollama)
-            stop_token_ids: Token IDs to stop generation
-            repetition_penalty: Penalty for repeating tokens
-            num_ctx: Context window size (default: 8192)
-            num_predict: Maximum number of tokens to predict (default: 49152)
-            
-        Returns:
-            Generator yielding tokens
-        """
-        # Generate a unique request ID if none provided
-        if request_id is None:
-            import uuid
-            request_id = f"req-{str(uuid.uuid4())[:8]}"
+    def validate_voice(self, voice: str) -> None:
         if voice not in self.available_voices:
-            logger.warning(f"Invalid voice: {voice}, defaulting to female")
-            voice = "female"
-            
-        # Map external voice to internal model voice
-        model_voice = self._voice_mapping.get(voice, "tara")
-        
-        # Enforce presence of sampling params
-        if temperature is None or top_p is None or repetition_penalty is None:
-            raise ValueError("temperature, top_p, and repetition_penalty are required parameters")
-            
-        logger.info(f"Generating speech for prompt (length: {len(prompt)}), voice: {voice}")
-        logger.info(f"Parameters: temp={temperature}, top_p={top_p}, rep_penalty={repetition_penalty}, num_ctx={num_ctx}, num_predict={num_predict}")
-        prompt_string = self._format_prompt(prompt, voice)
-        
-        sampling_params = SamplingParams(
-            temperature=temperature,
-            top_p=top_p,
-            max_tokens=max_tokens,
-            stop_token_ids=stop_token_ids,
-            repetition_penalty=repetition_penalty,
+            raise ValueError(
+                f"Voice {voice} is not available. Valid options are: {', '.join(self.available_voices)}"
+            )
+
+    def _iter_pcm16_chunks(self, audio: np.ndarray) -> Iterable[bytes]:
+        if audio is None or audio.size == 0:
+            return
+        # Ensure 1D float array
+        audio = np.asarray(audio).astype(np.float32).flatten()
+        if self.stream_chunk_samples <= 0 or audio.size <= self.stream_chunk_samples:
+            yield _float_to_pcm16_bytes(audio)
+            return
+        # Chunk into fixed-size segments for streaming
+        for i in range(0, audio.size, self.stream_chunk_samples):
+            segment = audio[i : i + self.stream_chunk_samples]
+            yield _float_to_pcm16_bytes(segment)
+
+    async def generate_speech_async(
+        self, prompt: str, voice: str | None = None, **kwargs
+    ) -> AsyncGenerator[bytes, None]:
+        """
+        Generate speech audio asynchronously as PCM16 bytes (24 kHz).
+
+        Parameters present in kwargs like temperature/top_p/repetition_penalty are
+        accepted for API compatibility but ignored by Kokoro.
+        """
+        selected_voice = voice or "female"
+        if selected_voice not in self.available_voices:
+            selected_voice = "female"
+
+        kokoro_voice = self._voice_mapping[selected_voice]
+        text = prompt or ""
+        if not text.strip():
+            return
+
+        logger.info(
+            "Kokoro generating | voice=%s (%s) text_len=%d",
+            selected_voice,
+            kokoro_voice,
+            len(text),
         )
 
-        token_queue = queue.Queue()
+        # Kokoro yields (graphemes, phonemes, audio_np) per segment
+        generator = self.pipeline(
+            text,
+            voice=kokoro_voice,
+            speed=self.speed,
+            split_pattern=self.split_pattern,
+        )
 
-        async def async_producer():
-            try:
-                async for result in self.engine.generate(prompt=prompt_string, sampling_params=sampling_params, request_id=request_id):
-                    token_queue.put(result.outputs[0].text)
-                token_queue.put(None)  # Sentinel to indicate completion
-            except Exception as e:
-                logger.error(f"Error in token generation: {str(e)}")
-                token_queue.put(None)  # Ensure we don't hang
-
-        def run_async():
-            asyncio.run(async_producer())
-
-        thread = threading.Thread(target=run_async)
-        thread.start()
-
-        try:
-            token_count = 0
-            while True:
-                token = token_queue.get()
-                if token is None:
-                    break
-                token_count += 1
-                yield token
-                
-            logger.info(f"Generated {token_count} tokens for request {request_id}")
-        except Exception as e:
-            logger.error(f"Error while yielding tokens: {str(e)}")
-        finally:
-            thread.join()
-    
-    def generate_speech(self, **kwargs):
-        """
-        Generate speech audio from text
-        
-        Returns:
-            Generator yielding audio chunks
-        """
-        logger.debug("Starting speech generation")
-        # Ensure required sampling params are present
-        if 'temperature' not in kwargs or 'top_p' not in kwargs or 'repetition_penalty' not in kwargs:
-            raise ValueError("temperature, top_p, and repetition_penalty are required parameters")
-        return tokens_decoder_sync(self.generate_tokens_sync(**kwargs))
-        
-    async def generate_speech_async(self, prompt, voice=None, **kwargs):
-        """
-        Generate speech audio asynchronously
-        
-        Args:
-            prompt: Text to convert to speech
-            voice: Voice to use ('female' or 'male')
-            **kwargs: Additional parameters for token generation:
-                - temperature: Controls randomness (default depends on voice)
-                - top_p: Nucleus sampling parameter (default: 0.8)
-                - repetition_penalty: Penalty for repeating tokens (default depends on voice) 
-                - num_ctx: Context window size (default: 8192)
-                - num_predict: Maximum number of tokens to predict (default: 49152)
-                
-        Returns:
-            Async generator yielding audio chunks
-        """
-        logger.debug(f"Starting async speech generation for prompt: '{prompt[:20]}...'")
-
-        # Defaults for context lengths only (sampling must be passed by caller)
-        kwargs.setdefault('max_tokens', 49152)
-        kwargs.setdefault('num_ctx', 8192)
-        kwargs.setdefault('num_predict', 49152)
-
-        # Reuse proven sync path end-to-end and consume it without blocking the loop
-        # Validate sampling params exist when generating speech
-        if 'temperature' not in kwargs or 'top_p' not in kwargs or 'repetition_penalty' not in kwargs:
-            raise ValueError("temperature, top_p, and repetition_penalty are required parameters")
-
-        sync_audio_gen = self.generate_speech(prompt=prompt, voice=voice, **kwargs)
-
-        while True:
-            chunk = await asyncio.to_thread(lambda: next(sync_audio_gen, None))
-            if chunk is None:
-                break
-            yield chunk
+        # Stream out PCM bytes per segment, chunked
+        for _, _, audio_np in generator:
+            for pcm_bytes in self._iter_pcm16_chunks(audio_np):
+                yield pcm_bytes

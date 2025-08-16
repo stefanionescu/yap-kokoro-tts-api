@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Warmup script for Orpheus TTS API.
+Warmup script for Kokoro TTS API.
 Sends a couple of requests to warm up the model for optimal performance.
 """
 import requests
@@ -20,7 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SAMPLE_RATE = 24000  # Hz, SNAC 24kHz mono, 16-bit PCM
+SAMPLE_RATE = 24000  # Hz, Kokoro 24kHz mono, 16-bit PCM
 
 def _compute_metrics(total_bytes: int, t0: float, t_first: float, t_end: float):
     ttfb_ms = (t_first - t0) * 1000.0
@@ -176,7 +176,7 @@ def warmup_api(host="localhost", port=8000, save_audio=False):
     return True
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Warm up the Orpheus TTS API")
+    parser = argparse.ArgumentParser(description="Warm up the Kokoro TTS API")
     parser.add_argument("--host", default="localhost", help="API host (default: localhost)")
     parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
     parser.add_argument("--save", action="store_true", help="Save generated audio files")

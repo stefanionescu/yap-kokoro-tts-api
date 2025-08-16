@@ -72,8 +72,7 @@ async def lifespan(app: FastAPI):
     gpu_utilization = float(os.getenv("GPU_MEMORY_UTILIZATION", "0.9"))
     quantization = os.getenv("QUANTIZATION", "deepspeedfp")
     
-    # Voice-specific parameters
-    # These will be used as defaults but can be overridden in API calls
+    # Retained for API compatibility; Kokoro ignores sampling params
     temperature_tara = float(os.getenv("TEMPERATURE_TARA", "0.8"))
     temperature_zac = float(os.getenv("TEMPERATURE_ZAC", "0.4"))
     top_p = float(os.getenv("TOP_P", "0.8"))
@@ -84,7 +83,7 @@ async def lifespan(app: FastAPI):
     num_ctx = int(os.getenv("NUM_CTX", "8192"))
     num_predict = int(os.getenv("NUM_PREDICT", "49152"))
     
-    logger.info(f"Initializing OrpheusModel with model={model_name}, quantization={quantization}")
+    logger.info(f"Initializing TTS engine with model={model_name}, quantization={quantization}")
     
     # Initialize the model
     engine = OrpheusModel(
@@ -95,8 +94,8 @@ async def lifespan(app: FastAPI):
     )
     
     # Log the configuration
-    logger.info(f"Voice settings - tara: temp={temperature_tara}, top_p={top_p}, rep_penalty={rep_penalty_tara}")
-    logger.info(f"Voice settings - zac: temp={temperature_zac}, top_p={top_p}, rep_penalty={rep_penalty_zac}")
+    logger.info(f"Voice settings - female: temp={temperature_tara}, top_p={top_p}, rep_penalty={rep_penalty_tara}")
+    logger.info(f"Voice settings - male: temp={temperature_zac}, top_p={top_p}, rep_penalty={rep_penalty_zac}")
     logger.info(f"Context settings: num_ctx={num_ctx}, num_predict={num_predict}")
     
     # Define gender for the available voices

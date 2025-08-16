@@ -13,6 +13,6 @@ chmod +x "$SCRIPT_DIR/start.sh" || true
 nohup bash -c '"$0"/start.sh' "$SCRIPT_DIR" > server.log 2>&1 & echo $! > server.pid
 
 echo "[start_bg] Server started with PID $(cat server.pid). Logs: $ROOT_DIR/server.log"
-echo "[start_bg] Tail logs: ./scripts/logs.sh"
+echo "[start_bg] Tail logs: ./scripts/tail_bg_logs.sh"
 
 
