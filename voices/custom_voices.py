@@ -2,7 +2,7 @@
 """
 Create and manage Kokoro custom voices on the pod (no API required).
 
-Persisted at: ${CUSTOM_VOICES_DIR:-custom_voices}/custom_voices.json
+Persisted at: custom_voices/custom_voices.json (auto-created)
 
 Recipe format:
   - A '+'-separated blend of Kokoro voices, e.g. "af_aoede+am_michael"
@@ -10,13 +10,13 @@ Recipe format:
 
 Examples:
   # Add/update a custom voice
-  python scripts/custom_voices.py add --name my_blend --recipe "af_aoede+am_michael" --validate
+  python voices/custom_voices.py add --name my_blend --recipe "af_aoede+am_michael" --validate
 
   # List
-  python scripts/custom_voices.py list
+  python voices/custom_voices.py list
 
   # Remove
-  python scripts/custom_voices.py remove --name my_blend
+  python voices/custom_voices.py remove --name my_blend
 
 Note: The server reads custom voices on startup. After changes, restart:
   bash scripts/stop.sh || true && bash scripts/start.sh
@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Dict
 
 
-CUSTOM_DIR = Path(os.getenv("CUSTOM_VOICES_DIR", "custom_voices")).resolve()
+CUSTOM_DIR = Path("custom_voices").resolve()
 CUSTOM_JSON = CUSTOM_DIR / "custom_voices.json"
 
 

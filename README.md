@@ -1,134 +1,82 @@
-# Kokoro TTS Deployment
+## Kokoro TTS Deployment
 
-FastAPI-based service for Kokoro-82M using the official `kokoro` Python package. No quantization or separate decoder required.
+FastAPI service around Kokoro‑82M (24 kHz PCM streaming). Minimal, production‑oriented.
 
-## Features
-
-- 🔊 Low-latency PCM16 streaming at 24 kHz (TTFB logged)
-- 🗣️ Voice selector via API: `female` or `male` (mapped to Kokoro voices Aoede/Michael)
-- 🔌 REST and WebSocket endpoints
-- 📝 Centralized logging
-
-## Prerequisites
-
-- Python 3.10+
-- Optional: espeak-ng (for English OOD fallback and some languages)
-
-## Quick Start
-
-1) Setup
+### One‑shot run
 ```bash
 bash scripts/setup.sh
-```
-
-2) Start (foreground)
-```bash
 bash scripts/start.sh
-```
-
-3) Start (background, survives closing web console)
-```bash
-bash scripts/start_bg.sh          # writes server.pid / server.pgid, logs → server.log
-bash scripts/tail_bg_logs.sh      # view logs
-bash scripts/stop.sh              # stop background server
-```
-
-4) Test HTTP streaming
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech/stream \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Hello, this is a test of the Kokoro text-to-speech system.", "voice":"female"}' \
-  --output test.pcm
-
-# male voice
-curl -X POST http://localhost:8000/v1/audio/speech/stream \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Testing male voice.", "voice":"male"}' \
-  --output test_male.pcm
-```
-
-5) Warmup (optional)
-```bash
-source venv/bin/activate
-python warmup.py --host localhost --port 8000 --save   # saves warmup_audio/*.pcm
-```
-
-## API Docs
-
-Visit:
-```
-http://localhost:8000/docs
-```
-
-## Voices
-
-- API voices exposed: `female` → Kokoro voice `aoede` (American), `male` → `michael` (American)
-  - Override via `.env`: `DEFAULT_VOICE_FEMALE`, `DEFAULT_VOICE_MALE`
-
-## Audio
-
-- PCM16 mono at 24000 Hz is streamed by default (saved by curl as `.pcm`)
-- OPUS (Ogg/Opus) available by setting `{"format":"opus"}` if `ffmpeg` is installed
-
-## Deployment (RunPod)
-
-Quick one-shot:
-```bash
-cd /workspace
-git clone https://github.com/yourusername/yap-voice-model-deployment.git
-cd yap-voice-model-deployment
-bash scripts/setup.sh
-bash scripts/start_bg.sh
-```
-
-Manual:
-```bash
-bash scripts/setup.sh
-bash scripts/start_bg.sh
 bash scripts/tail_bg_logs.sh
+# optional warmup (on the pod)
 source venv/bin/activate && python test/warmup.py --save
 ```
 
-Stopping and cleaning (keeps web console alive):
+### Call the API (HTTP streaming)
 ```bash
-bash scripts/stop.sh                 # stop background server
-bash scripts/purge_pod.sh            # stop server group only (safe)
-bash scripts/purge_pod.sh --clean-files   # also remove venv/model/cache/logs
+curl -X POST http://localhost:8000/v1/audio/speech/stream \
+  -H "Content-Type: application/json" \
+  -d '{"input":"Hello from Kokoro","voice":"female","format":"pcm"}' \
+  --output out.pcm
 ```
 
-## Configuration (.env)
+### WebSocket (binary PCM)
+- Route: `/v1/audio/speech/stream/ws`
+- Send JSON `{continue:true, segment_id:"seg-1", input:"...", voice:"female", format:"pcm"}` then read binary audio frames until `{type:"end"}`.
 
-- MODEL_NAME (default `hexgrad/Kokoro-82M`), QUANTIZATION=`none`
-- DEFAULT_VOICE_FEMALE=`aoede`, DEFAULT_VOICE_MALE=`michael`, LANG_CODE=`a`
-- KOKORO_SPEED, KOKORO_SPLIT_PATTERN, STREAM_CHUNK_SECONDS (default 0.25)
-- FIRST_SEGMENT_MAX_WORDS (default 10), FIRST_SEGMENT_BOUNDARIES (first-chunk cut; for sub-200ms TTFB)
-- HF_HOME (cache dir)
-
-Runtime envs:
-- None required beyond defaults. `LANG_CODE`, `DEFAULT_VOICE_*`, and `STREAM_CHUNK_SECONDS` can be customized in `.env`.
-
-Notes:
-- The API preserves the same endpoints and payload shape as before, but sampling params are ignored by Kokoro.
-
-## Components
-
-- `main.py` – FastAPI app and endpoints
-- `src/engine.py` – Kokoro integration, fast-TTFB segmentation, PCM/OPUS streaming
-- `src/logger.py` – centralized logging
-
-## Requirements
-
-See `requirements.txt` (kokoro, misaki[en], torch).
-
-## Remote client
-
-Use the included client to call the API from your local machine or another host:
+### Custom voices (on‑pod only)
+- Blends are persisted in `custom_voices/custom_voices.json`.
+- Create/update a blend (recipe is `+`‑separated base voices, repeats weight the mix):
 ```bash
-python client.py --host <RUNPOD_PUBLIC_IP> --port 8000 \
-  --text "Hello there" --voice female --out hello.pcm
+python voices/custom_voices.py add --name my_blend --recipe "af_aoede+af_nicole" --validate
+# 60/40 weighting (10 parts): 6× aoede, 4× nicole
+python voices/custom_voices.py add --name aoede60_nicole40 \
+  --recipe "af_aoede+af_aoede+af_aoede+af_aoede+af_aoede+af_aoede+af_nicole+af_nicole+af_nicole+af_nicole" --validate
+```
+- Use in API calls by setting `voice:"my_blend"`.
+- List/remove:
+```bash
+python voices/custom_voices.py list
+python voices/custom_voices.py remove --name my_blend
+```
+Restart the server after changes:
+```bash
+bash scripts/stop.sh || true && bash scripts/start.sh
 ```
 
-## References
+### Benchmark & find optimal concurrency
+```bash
+# On the pod
+source venv/bin/activate
+# Try several conc values to find the sweet spot (WS recommended)
+python test/bench.py --proto ws --n 60 --concurrency 1
+python test/bench.py --proto ws --n 60 --concurrency 2
+python test/bench.py --proto ws --n 60 --concurrency 4
+python test/bench.py --proto ws --n 60 --concurrency 8
+python test/bench.py --proto ws --n 60 --concurrency 12
+```
+- Pick the highest concurrency where p95 TTFB is acceptable. Set it via `MAX_CONCURRENT_JOBS` (see below) and scale replicas for more QPS.
 
-- Kokoro GitHub: [hexgrad/kokoro](https://github.com/hexgrad/kokoro)
-- Kokoro-82M on Hugging Face: [hexgrad/Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M)
+### Config knobs (sane defaults set by start.sh)
+- TTFB/streaming
+  - `FIRST_SEGMENT_MAX_WORDS` (default 6)
+  - `FIRST_SEGMENT_BOUNDARIES` (default `.,?!;:`)
+  - `STREAM_CHUNK_SECONDS` (default 0.1)
+  - `PRIME_STREAM=1`, `PRIME_BYTES=512`
+- Concurrency/backpressure
+  - `MAX_CONCURRENT_JOBS` (default 12)
+  - `QUEUE_MAXSIZE` (default 256) – excess requests block in queue
+- GPU
+  - `KOKORO_DEVICE` (e.g., `cuda:0`)
+  - `KOKORO_GPU_MEMORY_FRACTION` (e.g., `0.95`) – soft cap; use MIG for hard isolation
+
+### Health & status
+- `/healthz` (200 OK), `/readyz` (engine + device), `/api/status` (device, CUDA, GPU mem, ffmpeg)
+
+### Notes
+- Voices come from Kokoro‑82M: see the official list (`af_aoede`, `am_michael`, etc.).
+- Default API voices: `female→af_aoede`, `male→am_michael`.
+- Audio: PCM16 mono @ 24 kHz by default; Ogg/Opus with `{"format":"opus"}` if ffmpeg installed.
+
+### References
+- Kokoro GitHub: https://github.com/hexgrad/kokoro
+- Kokoro‑82M model card: https://huggingface.co/hexgrad/Kokoro-82M

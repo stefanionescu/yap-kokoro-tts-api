@@ -47,8 +47,9 @@ class KokoroEngine:
             "male": os.getenv("DEFAULT_VOICE_MALE", "am_michael"),
         }
 
-        # Custom voice recipes (e.g., "my_blend": "af_aoede+am_michael")
-        self.custom_dir = Path(os.getenv("CUSTOM_VOICES_DIR", "custom_voices")).resolve()
+        # Custom voice recipes (e.g., "my_blend": "af_aoede+am_michael").
+        # ALWAYS save/load from the fixed directory "custom_voices".
+        self.custom_dir = Path("custom_voices").resolve()
         self.custom_dir.mkdir(parents=True, exist_ok=True)
         self.custom_json_path = self.custom_dir / "custom_voices.json"
         self._custom_voices: dict[str, str] = {}
@@ -83,12 +84,12 @@ class KokoroEngine:
         # Streaming/chunking behavior
         self.speed = float(os.getenv("KOKORO_SPEED", "1.0"))
         self.split_pattern = os.getenv("KOKORO_SPLIT_PATTERN", r"\n+")
-        # Stream chunking in samples (defaults to 0.5s)
+        # Stream chunking in samples (defaults to 0.1s)
         self.stream_chunk_samples = int(
-            float(os.getenv("STREAM_CHUNK_SECONDS", "0.25")) * SAMPLE_RATE
+            float(os.getenv("STREAM_CHUNK_SECONDS", "0.10")) * SAMPLE_RATE
         )
         # Fast-TTFB first-segment control
-        self.first_segment_max_words = int(os.getenv("FIRST_SEGMENT_MAX_WORDS", "3"))
+        self.first_segment_max_words = int(os.getenv("FIRST_SEGMENT_MAX_WORDS", "6"))
         self.first_segment_boundary_chars = os.getenv("FIRST_SEGMENT_BOUNDARIES", ".?!,;:-—")
 
         logger.info(

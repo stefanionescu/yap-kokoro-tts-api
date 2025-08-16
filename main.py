@@ -68,6 +68,17 @@ async def lifespan(app: FastAPI):
     quantization = os.getenv("QUANTIZATION", "none")
     
     logger.info(f"Initializing TTS engine with model={model_name}, quantization={quantization}")
+
+    # Torch perf knobs (small but free throughput/latency wins)
+    try:
+        torch.set_float32_matmul_precision("high")
+        if hasattr(torch.backends, "cuda"):
+            torch.backends.cuda.matmul.allow_tf32 = True  # type: ignore[attr-defined]
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.allow_tf32 = True  # type: ignore[attr-defined]
+            torch.backends.cudnn.benchmark = True  # type: ignore[attr-defined]
+    except Exception:
+        pass
     
     # Initialize the engine
     engine = KokoroEngine(lang_code=os.getenv("LANG_CODE", "a"))

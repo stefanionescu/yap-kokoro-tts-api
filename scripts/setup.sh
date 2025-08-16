@@ -44,7 +44,7 @@ DEFAULT_VOICE_MALE=am_michael
 LANG_CODE=a
 KOKORO_SPEED=1.0
 KOKORO_SPLIT_PATTERN="\\n+"
-STREAM_CHUNK_SECONDS=0.5
+STREAM_CHUNK_SECONDS=0.1
 
 # Context parameters (not used by Kokoro, kept for API compat logging)
 NUM_CTX=8192
