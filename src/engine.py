@@ -46,9 +46,24 @@ class KokoroEngine:
         }
 
         lang = lang_code or os.getenv("LANG_CODE", "a")  # 'a' = American English
-        # Device selection
+        # Device selection and optional memory cap BEFORE model init
         default_device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = os.getenv("KOKORO_DEVICE", default_device)
+        cuda_index = 0
+        if self.device.startswith("cuda") and ":" in self.device:
+            with contextlib.suppress(Exception):
+                cuda_index = int(self.device.split(":", 1)[1])
+        try:
+            if self.device.startswith("cuda") and torch.cuda.is_available():
+                torch.cuda.set_device(cuda_index)
+                fraction_env = os.getenv("KOKORO_GPU_MEMORY_FRACTION")
+                if fraction_env:
+                    frac = max(0.0, min(1.0, float(fraction_env)))
+                    torch.cuda.set_per_process_memory_fraction(frac, device=cuda_index)
+                    logger.info("Set CUDA per-process memory fraction to %s", frac)
+        except Exception as e:
+            logger.debug("Could not set CUDA device/memory fraction: %s", e)
+
         logger.info("Initializing Kokoro KPipeline | lang_code=%s device=%s", lang, self.device)
         # Try to pass device to KPipeline if supported; fall back gracefully
         try:
@@ -76,15 +91,7 @@ class KokoroEngine:
             self.stream_chunk_samples,
         )
 
-        # Optional: cap GPU memory usage per process (0.0–1.0)
-        try:
-            fraction_env = os.getenv("KOKORO_GPU_MEMORY_FRACTION")
-            if fraction_env and self.device.startswith("cuda"):
-                frac = max(0.0, min(1.0, float(fraction_env)))
-                torch.cuda.set_per_process_memory_fraction(frac, device=torch.device(self.device))
-                logger.info("Set CUDA per-process memory fraction to %s", frac)
-        except Exception as e:
-            logger.debug("Could not set CUDA memory fraction: %s", e)
+        # (memory cap already applied above before model init)
 
         # Async job queue and single-worker loop (one process per GPU)
         queue_size = int(os.getenv("QUEUE_MAXSIZE", "8"))
@@ -165,20 +172,27 @@ class KokoroEngine:
 
         if output_format == "pcm":
             for idx, piece in enumerate(pieces):
-                for item in pipeline_for(piece):
-                    audio_np = None
-                    # Kokoro-FastAPI returns dicts with key 'audio' (float32 np.ndarray)
-                    if isinstance(item, dict):
-                        audio_np = item.get("audio") or item.get("wav") or item.get("audio_np")
-                    elif isinstance(item, (list, tuple)):
-                        # Typical tuple: (text, phonemes, audio)
-                        audio_np = item[-1] if item else None
-                    elif isinstance(item, np.ndarray):
-                        audio_np = item
-                    if audio_np is None:
-                        # Unknown format: skip
+                result = pipeline_for(piece)
+                # Normalize to iterable of outputs
+                if isinstance(result, dict) or isinstance(result, np.ndarray) or isinstance(result, (bytes, bytearray)):
+                    iterator = [result]
+                elif isinstance(result, (list, tuple)):
+                    # Many pipelines return a single tuple (text, phonemes, audio)
+                    iterator = [result]
+                else:
+                    # Assume generator/iterator
+                    iterator = result
+                for out in iterator:
+                    audio_src = None
+                    if isinstance(out, dict):
+                        audio_src = out.get("audio") or out.get("wav") or out.get("audio_np")
+                    elif isinstance(out, (list, tuple)):
+                        audio_src = out[-1] if out else None
+                    elif isinstance(out, (np.ndarray, bytes, bytearray)):
+                        audio_src = out
+                    if audio_src is None:
                         continue
-                    for pcm_bytes in self._iter_pcm16_chunks(audio_np):
+                    for pcm_bytes in self._iter_pcm16_chunks(audio_src):
                         if pcm_bytes:
                             yield pcm_bytes
             return
@@ -186,17 +200,24 @@ class KokoroEngine:
         if output_format == "opus" and shutil.which("ffmpeg"):
             def pcm_iter():
                 for piece in pieces:
-                    for item in pipeline_for(piece):
-                        audio_np = None
-                        if isinstance(item, dict):
-                            audio_np = item.get("audio") or item.get("wav") or item.get("audio_np")
-                        elif isinstance(item, (list, tuple)):
-                            audio_np = item[-1] if item else None
-                        elif isinstance(item, np.ndarray):
-                            audio_np = item
-                        if audio_np is None:
+                    result = pipeline_for(piece)
+                    if isinstance(result, dict) or isinstance(result, np.ndarray) or isinstance(result, (bytes, bytearray)):
+                        iterator = [result]
+                    elif isinstance(result, (list, tuple)):
+                        iterator = [result]
+                    else:
+                        iterator = result
+                    for out in iterator:
+                        audio_src = None
+                        if isinstance(out, dict):
+                            audio_src = out.get("audio") or out.get("wav") or out.get("audio_np")
+                        elif isinstance(out, (list, tuple)):
+                            audio_src = out[-1] if out else None
+                        elif isinstance(out, (np.ndarray, bytes, bytearray)):
+                            audio_src = out
+                        if audio_src is None:
                             continue
-                        for pcm_bytes in self._iter_pcm16_chunks(audio_np):
+                        for pcm_bytes in self._iter_pcm16_chunks(audio_src):
                             if pcm_bytes:
                                 yield pcm_bytes
 
