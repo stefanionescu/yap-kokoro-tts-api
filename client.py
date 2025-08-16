@@ -1,81 +1,135 @@
 #!/usr/bin/env python3
 """
-Simple local client to call the remote Kokoro TTS API and save streamed audio.
+Kokoro TTS WebSocket client for streaming audio and saving to a listenable format.
 
-Usage examples:
+Examples:
+  # WAV output (recommended)
   python client.py --host <RUNPOD_PUBLIC_IP> --port 8000 \
-    --text "Hello there" --voice female --out hello.pcm
+    --text "Hello there" --voice female --out hello.wav --format wav
 
-Optionally pass an API key via env RUNPOD_API_KEY (sent as Bearer token) or
---api-key to send a custom header X-API-Key.
+  # Ogg/Opus output
+  python client.py --host <RUNPOD_PUBLIC_IP> --port 8000 \
+    --text "Hello there" --voice female --out hello.ogg --format ogg
+
+Requires ffmpeg for wav/ogg/mp3. If ffmpeg is unavailable and --format pcm is used,
+raw 24kHz mono PCM16 is written.
 """
 import argparse
+import asyncio
+import json
 import os
 import sys
 import time
-import requests
+import uuid
+import shutil
+import subprocess
+
+import websockets
+
+SAMPLE_RATE = 24000
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Call remote Kokoro TTS API and save streamed audio")
+def build_ffmpeg_cmd(output_path: str, output_format: str) -> list[str]:
+    """Return ffmpeg command to encode from stdin s16le 24k mono to desired format."""
+    base = [
+        "ffmpeg", "-loglevel", "error",
+        "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "-",
+    ]
+    if output_format == "wav":
+        return base + ["-c:a", "pcm_s16le", "-f", "wav", output_path]
+    if output_format in {"ogg", "opus"}:
+        bitrate = os.getenv("OPUS_BITRATE", "48k")
+        application = os.getenv("OPUS_APPLICATION", "audio")
+        return base + ["-c:a", "libopus", "-b:a", bitrate, "-application", application, "-f", "ogg", output_path]
+    if output_format == "mp3":
+        return base + ["-c:a", "libmp3lame", "-b:a", os.getenv("MP3_BITRATE", "192k"), "-f", "mp3", output_path]
+    raise ValueError(f"Unsupported format for ffmpeg: {output_format}")
+
+
+async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_path: str, out_format: str, use_tls: bool = False) -> int:
+    """Connect to WS, stream PCM, encode to chosen format via ffmpeg or write raw PCM."""
+    scheme = "wss" if use_tls else "ws"
+    ws_url = f"{scheme}://{host}:{port}/v1/audio/speech/stream/ws"
+    segment_id = f"seg-{uuid.uuid4().hex[:8]}"
+
+    proc: subprocess.Popen | None = None
+    file_handle = None
+    if out_format == "pcm":
+        file_handle = open(out_path, "wb")
+    else:
+        if not shutil.which("ffmpeg"):
+            print("ffmpeg not found; install it or use --format pcm", file=sys.stderr)
+            return 2
+        proc = subprocess.Popen(build_ffmpeg_cmd(out_path, out_format), stdin=subprocess.PIPE)
+
+    t0 = time.time()
+    first = True
+    total = 0
+
+    # Avoid extra_headers; some builds mis-handle them
+    async with websockets.connect(ws_url, max_size=None) as ws:
+        await ws.send(json.dumps({
+            "continue": True,
+            "segment_id": segment_id,
+            "input": text,
+            "voice": voice,
+            "format": "pcm",
+        }))
+
+        while True:
+            msg = await ws.recv()
+            if isinstance(msg, (bytes, bytearray)):
+                if first:
+                    print(f"TTFB: {1000*(time.time()-t0):.0f}ms")
+                    first = False
+                total += len(msg)
+                if file_handle is not None:
+                    file_handle.write(msg)
+                elif proc and proc.stdin:
+                    proc.stdin.write(msg)
+            else:
+                try:
+                    data = json.loads(msg)
+                except Exception:
+                    continue
+                if isinstance(data, dict) and data.get("type") == "end":
+                    break
+
+    if proc and proc.stdin:
+        try:
+            proc.stdin.close()
+            proc.wait(timeout=10)
+        except Exception:
+            pass
+    if file_handle is not None:
+        file_handle.close()
+
+    print(f"Saved ~{total} bytes of PCM to {out_path}")
+    return 0 if total > 0 else 3
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="WebSocket Kokoro TTS client → save audio via ffmpeg")
     parser.add_argument("--host", default="localhost", help="API host (RunPod public IP or hostname)")
     parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
     parser.add_argument("--voice", choices=["female", "male"], default="female", help="Voice to use")
     parser.add_argument("--text", required=True, help="Input text to synthesize")
-    parser.add_argument("--out", default="output.pcm", help="Output file path (.pcm)")
-    parser.add_argument("--api-key", default=None, help="Optional API key sent as X-API-Key header")
-    args = parser.parse_args()
+    parser.add_argument("--out", default="output.wav", help="Output file path (wav/ogg/mp3/pcm)")
+    parser.add_argument("--format", choices=["wav", "ogg", "opus", "mp3", "pcm"], default="wav", help="Output format")
+    parser.add_argument("--tls", action="store_true", help="Use wss:// (TLS)")
+    return parser.parse_args()
 
-    base_url = f"http://{args.host}:{args.port}"
-    url = f"{base_url}/v1/audio/speech/stream"
 
-    headers = {"Content-Type": "application/json", "Accept-Encoding": "identity", "Cache-Control": "no-store"}
-    # Prefer Bearer token from env if present
-    bearer = os.getenv("RUNPOD_API_KEY") or os.getenv("API_TOKEN")
-    if bearer:
-        headers["Authorization"] = f"Bearer {bearer}"
-    if args.api_key:
-        headers["X-API-Key"] = args.api_key
-
-    # Require explicit sampling params
-    if args.voice == "female":
-        temperature, top_p, rep = 0.5, 0.95, 1.15
-    else:
-        temperature, top_p, rep = 0.3, 0.95, 1.12
-    payload = {
-        "input": args.text,
-        "voice": args.voice,
-        "temperature": temperature,
-        "top_p": top_p,
-        "repetition_penalty": rep,
-    }
-
-    print(f"Calling {url}…")
-    t0 = time.time()
+def main() -> None:
+    args = parse_args()
     try:
-        with requests.post(url, json=payload, headers=headers, stream=True, timeout=60) as r:
-            r.raise_for_status()
-            first = True
-            total = 0
-            with open(args.out, "wb") as f:
-                for chunk in r.iter_content(chunk_size=1):
-                    if not chunk:
-                        continue
-                    if first:
-                        print(f"TTFB: {1000*(time.time()-t0):.0f}ms")
-                        first = False
-                    f.write(chunk)
-                    total += len(chunk)
-            print(f"Saved {total} bytes to {args.out}")
-    except requests.HTTPError as e:
-        print(f"HTTP error: {e} - body: {getattr(e.response,'text', '')}")
-        sys.exit(1)
-    except requests.RequestException as e:
-        print(f"Request error: {e}")
-        sys.exit(1)
+        rc = asyncio.run(stream_ws_and_save(args.host, args.port, args.voice, args.text, args.out, args.format, args.tls))
+        if rc != 0:
+            sys.exit(rc)
+    except KeyboardInterrupt:
+        print("Interrupted")
+        sys.exit(130)
 
 
 if __name__ == "__main__":
     main()
-
-

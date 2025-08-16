@@ -121,6 +121,7 @@ async def tts_stream(data: TTSRequest):
 
     async def generate_audio_stream():
         first_chunk = True
+        total_bytes = 0
         try:
             # Optional priming to defeat overly aggressive proxy buffering
             if os.getenv("PRIME_STREAM", "0") == "1":
@@ -141,9 +142,14 @@ async def tts_stream(data: TTSRequest):
                     ttfb = time.perf_counter() - start_time
                     logger.info(f"Time to first audio chunk (TTFB): {ttfb*1000:.2f} ms")
                     first_chunk = False
+                total_bytes += len(chunk)
                 yield chunk
         except Exception as e:
             logger.exception(f"Error during audio generation: {str(e)}")
+        finally:
+            if total_bytes > 0:
+                secs = total_bytes / (24000 * 2)
+                logger.info(f"HTTP stream completed: {total_bytes} bytes (~{secs:.2f}s)")
 
     media_type = 'audio/ogg' if out_format == 'opus' else 'audio/pcm'
     return StreamingResponse(

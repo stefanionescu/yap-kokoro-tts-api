@@ -192,9 +192,18 @@ class KokoroEngine:
                         audio_src = out
                     if audio_src is None:
                         continue
+                    # Ensure we actually produce bytes; if chunking yields nothing, fall back to full buffer
+                    emitted = False
                     for pcm_bytes in self._iter_pcm16_chunks(audio_src):
                         if pcm_bytes:
+                            emitted = True
                             yield pcm_bytes
+                    if not emitted:
+                        # last resort: serialize whole audio
+                        if isinstance(audio_src, (np.ndarray, list, tuple)):
+                            buf = _float_to_pcm16_bytes(np.asarray(audio_src, dtype=np.float32).flatten())
+                            if buf:
+                                yield buf
             return
 
         if output_format == "opus" and shutil.which("ffmpeg"):
