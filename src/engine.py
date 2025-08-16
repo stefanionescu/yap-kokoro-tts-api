@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from kokoro import KPipeline
+import torch
 
 
 logger = logging.getLogger(__name__)
@@ -45,8 +46,15 @@ class KokoroEngine:
         }
 
         lang = lang_code or os.getenv("LANG_CODE", "a")  # 'a' = American English
-        logger.info("Initializing Kokoro KPipeline | lang_code=%s", lang)
-        self.pipeline = KPipeline(lang_code=lang)
+        # Device selection
+        default_device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = os.getenv("KOKORO_DEVICE", default_device)
+        logger.info("Initializing Kokoro KPipeline | lang_code=%s device=%s", lang, self.device)
+        # Try to pass device to KPipeline if supported; fall back gracefully
+        try:
+            self.pipeline = KPipeline(lang_code=lang, device=self.device)
+        except TypeError:
+            self.pipeline = KPipeline(lang_code=lang)
 
         # Streaming/chunking behavior
         self.speed = float(os.getenv("KOKORO_SPEED", "1.0"))
@@ -67,6 +75,16 @@ class KokoroEngine:
             self.split_pattern,
             self.stream_chunk_samples,
         )
+
+        # Optional: cap GPU memory usage per process (0.0–1.0)
+        try:
+            fraction_env = os.getenv("KOKORO_GPU_MEMORY_FRACTION")
+            if fraction_env and self.device.startswith("cuda"):
+                frac = max(0.0, min(1.0, float(fraction_env)))
+                torch.cuda.set_per_process_memory_fraction(frac, device=torch.device(self.device))
+                logger.info("Set CUDA per-process memory fraction to %s", frac)
+        except Exception as e:
+            logger.debug("Could not set CUDA memory fraction: %s", e)
 
         # Async job queue and single-worker loop (one process per GPU)
         self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue()
@@ -121,6 +139,7 @@ class KokoroEngine:
         # Pre-segment to force a tiny first segment for sub-200ms TTFB
         pieces = self._segment_for_fast_ttfb(text)
         def pipeline_for(piece: str):
+            # Allow per-call speed/mapping override via env; kept simple here
             return self.pipeline(
                 piece,
                 voice=kokoro_voice,
@@ -130,17 +149,38 @@ class KokoroEngine:
 
         if output_format == "pcm":
             for idx, piece in enumerate(pieces):
-                for _, _, audio_np in pipeline_for(piece):
+                for item in pipeline_for(piece):
+                    audio_np = None
+                    if isinstance(item, dict):
+                        audio_np = item.get("audio") or item.get("wav") or item.get("audio_np")
+                    elif isinstance(item, (list, tuple)):
+                        # Assume last element is audio array
+                        audio_np = item[-1] if item else None
+                    elif isinstance(item, np.ndarray):
+                        audio_np = item
+                    if audio_np is None:
+                        continue
                     for pcm_bytes in self._iter_pcm16_chunks(audio_np):
-                        yield pcm_bytes
+                        if pcm_bytes:
+                            yield pcm_bytes
             return
 
         if output_format == "opus" and shutil.which("ffmpeg"):
             def pcm_iter():
                 for piece in pieces:
-                    for _, _, audio_np in pipeline_for(piece):
+                    for item in pipeline_for(piece):
+                        audio_np = None
+                        if isinstance(item, dict):
+                            audio_np = item.get("audio") or item.get("wav") or item.get("audio_np")
+                        elif isinstance(item, (list, tuple)):
+                            audio_np = item[-1] if item else None
+                        elif isinstance(item, np.ndarray):
+                            audio_np = item
+                        if audio_np is None:
+                            continue
                         for pcm_bytes in self._iter_pcm16_chunks(audio_np):
-                            yield pcm_bytes
+                            if pcm_bytes:
+                                yield pcm_bytes
 
             for opus_bytes in self._opus_encode_via_ffmpeg(pcm_iter()):
                 yield opus_bytes
@@ -196,10 +236,27 @@ class KokoroEngine:
             )
 
     def _iter_pcm16_chunks(self, audio: np.ndarray) -> Iterable[bytes]:
-        if audio is None or audio.size == 0:
+        if audio is None:
+            return
+        # Accept numpy arrays or torch tensors; ensure CPU numpy float32
+        try:
+            if isinstance(audio, np.ndarray):
+                arr = audio
+            elif 'torch' in str(type(audio)):
+                try:
+                    # Handle torch.Tensor without importing torch here
+                    arr = audio.detach().to('cpu').numpy()
+                except Exception:
+                    return
+            else:
+                arr = np.asarray(audio)
+        except Exception:
+            return
+
+        if arr.size == 0:
             return
         # Ensure 1D float array
-        audio = np.asarray(audio).astype(np.float32).flatten()
+        audio = np.asarray(arr).astype(np.float32).flatten()
         if self.stream_chunk_samples <= 0 or audio.size <= self.stream_chunk_samples:
             yield _float_to_pcm16_bytes(audio)
             return
@@ -255,6 +312,39 @@ class KokoroEngine:
             if chunk is None:
                 break
             yield chunk
+
+    def get_status(self) -> dict:
+        """Return runtime status for diagnostics."""
+        gpu_name = None
+        cuda_available = False
+        device_index = None
+        free_mem = None
+        total_mem = None
+        try:
+            cuda_available = torch.cuda.is_available()
+            if cuda_available:
+                device_index = torch.cuda.current_device()
+                gpu_name = torch.cuda.get_device_name(device_index)
+                try:
+                    free_mem, total_mem = torch.cuda.mem_get_info(device_index)
+                except Exception:
+                    free_mem = total_mem = None
+        except Exception:
+            pass
+        ffmpeg = shutil.which("ffmpeg") is not None
+        return {
+            "device": getattr(self, "device", "cpu"),
+            "cuda_available": cuda_available,
+            "gpu_name": gpu_name,
+            "device_index": device_index,
+            "gpu_mem_free_bytes": free_mem,
+            "gpu_mem_total_bytes": total_mem,
+            "ffmpeg_available": ffmpeg,
+            "voices": self._voice_mapping,
+            "speed": self.speed,
+            "split_pattern": self.split_pattern,
+            "stream_chunk_seconds": self.stream_chunk_samples / float(SAMPLE_RATE),
+        }
 
 
 @dataclass

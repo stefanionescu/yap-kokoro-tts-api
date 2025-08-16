@@ -13,6 +13,8 @@ import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 from fastapi.responses import StreamingResponse
+from fastapi import Response, HTTPException
+from fastapi import BackgroundTasks
 from pydantic import BaseModel, Field
 from typing import List, Optional
 import warnings
@@ -28,6 +30,8 @@ class TTSRequest(BaseModel):
     input: str = "Hey there, looks like you forgot to provide a prompt!"
     voice: str = "female"
     format: str = Field("pcm", description="Output format: pcm (default), opus (experimental)")
+    # Optional per-request speed override for OpenAI parity
+    speed: Optional[float] = Field(None, description="Override speaking speed (e.g., 0.8–1.4)")
 
 
 class TTSStreamRequest(BaseModel):
@@ -65,27 +69,14 @@ async def lifespan(app: FastAPI):
     model_name = os.getenv("MODEL_NAME", "hexgrad/Kokoro-82M")
     quantization = os.getenv("QUANTIZATION", "none")
     
-    # Retained for API compatibility; Kokoro ignores sampling params
-    temperature_tara = float(os.getenv("TEMPERATURE_TARA", "0.8"))
-    temperature_zac = float(os.getenv("TEMPERATURE_ZAC", "0.4"))
-    top_p = float(os.getenv("TOP_P", "0.8"))
-    rep_penalty_tara = float(os.getenv("REP_PENALTY_TARA", "1.9"))
-    rep_penalty_zac = float(os.getenv("REP_PENALTY_ZAC", "1.85"))
-    
-    # Context parameters
-    num_ctx = int(os.getenv("NUM_CTX", "8192"))
-    num_predict = int(os.getenv("NUM_PREDICT", "49152"))
-    
     logger.info(f"Initializing TTS engine with model={model_name}, quantization={quantization}")
     
     # Initialize the engine
     engine = KokoroEngine(lang_code=os.getenv("LANG_CODE", "a"))
     engine.start_worker()
     
-    # Log the configuration
-    logger.info(f"Voice settings - female: temp={temperature_tara}, top_p={top_p}, rep_penalty={rep_penalty_tara}")
-    logger.info(f"Voice settings - male: temp={temperature_zac}, top_p={top_p}, rep_penalty={rep_penalty_zac}")
-    logger.info(f"Context settings: num_ctx={num_ctx}, num_predict={num_predict}")
+    # Log Kokoro settings instead
+    logger.info("Kokoro model initialized: %s (quant=%s)", model_name, quantization)
     
     # Define gender for the available voices
     voice_genders = {
@@ -106,41 +97,9 @@ async def lifespan(app: FastAPI):
     
     logger.info(f"TTS engine initialized with {len(VOICE_DETAILS)} voices: {', '.join([v.name for v in VOICE_DETAILS])}")
 
-    async def _keep_gpu_hot_loop():
-        """Periodically run a tiny generation to keep GPU kernels warm."""
-        interval = float(os.getenv("KEEP_GPU_HOT_INTERVAL", "25"))
-        voice_hint = os.getenv("KEEP_GPU_HOT_VOICE", "male")
-        prompt_hint = os.getenv("KEEP_GPU_HOT_PROMPT", ".")
-        while True:
-            try:
-                gen = engine.generate_speech_async(
-                    prompt=prompt_hint,
-                    voice=voice_hint,
-                    temperature=0.0,
-                    top_p=1.0,
-                    repetition_penalty=1.0,
-                    max_tokens=1,
-                )
-                async for _ in gen:
-                    break
-            except Exception as e:
-                logger.debug(f"keep_gpu_hot error: {e}")
-            await asyncio.sleep(interval)
-
-    # Start keep-hot task
-    global _keep_hot_task
-    _keep_hot_task = asyncio.create_task(_keep_gpu_hot_loop())
+    # No keep-hot task needed for Kokoro
     yield
-    
-    # Clean up the model and other resources if needed
     logger.info("Shutting down TTS engine")
-    try:
-        if _keep_hot_task is not None:
-            _keep_hot_task.cancel()
-            with contextlib.suppress(Exception):
-                await _keep_hot_task
-    except Exception:
-        pass
 
 app = FastAPI(lifespan=lifespan)
 
@@ -167,6 +126,10 @@ async def tts_stream(data: TTSRequest):
             if os.getenv("PRIME_STREAM", "0") == "1":
                 yield b"\0" * 128
 
+            # Per-request speed override if provided
+            if getattr(data, "speed", None) is not None:
+                os.environ["KOKORO_SPEED"] = str(max(0.5, min(2.0, float(data.speed))))
+
             audio_generator = engine.generate_speech_async(
                 prompt=data.input,
                 voice=voice,
@@ -182,15 +145,35 @@ async def tts_stream(data: TTSRequest):
         except Exception as e:
             logger.exception(f"Error during audio generation: {str(e)}")
 
+    media_type = 'audio/ogg' if out_format == 'opus' else 'audio/pcm'
     return StreamingResponse(
         generate_audio_stream(),
-        media_type='audio/pcm',
+        media_type=media_type,
         headers={
             "X-Accel-Buffering": "no",
             "Cache-Control": "no-store",
-            "Content-Type": "audio/pcm",
+            "Content-Type": media_type,
         },
     )
+
+@app.post('/v1/audio/speech')
+async def tts_sync(data: TTSRequest):
+    """OpenAI-style sync endpoint that returns the full audio body."""
+    voice = data.voice
+    out_format = data.format.lower() if data.format else "pcm"
+    try:
+        chunks = []
+        async for chunk in engine.generate_speech_async(
+            prompt=data.input,
+            voice=voice,
+            output_format=out_format,
+        ):
+            chunks.append(chunk)
+        audio_bytes = b"".join(chunks)
+        mt = 'audio/ogg' if out_format == 'opus' else 'audio/pcm'
+        return Response(content=audio_bytes, media_type=mt)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.websocket("/v1/audio/speech/stream/ws")
@@ -215,6 +198,8 @@ async def tts_stream_ws(websocket: WebSocket):
             out_format = str(data.get("format", "pcm")).lower()
 
             start_time = time.perf_counter()
+            total_samples = 0
+            segment_index = 0
             try:
                 await websocket.send_json({"type": "start", "segment_id": segment_id})
 
@@ -233,10 +218,24 @@ async def tts_stream_ws(websocket: WebSocket):
                             logger.info(f"WebSocket: Time to first audio chunk (TTFB): {ttfb*1000:.2f} ms")
                             first_chunk = False
                         await websocket.send_bytes(chunk)
+                        # send meta for each chunk
+                        total_samples += len(chunk) // 2  # 2 bytes per sample
+                        await websocket.send_json({
+                            "type": "meta",
+                            "segment": segment_index,
+                            "samples": len(chunk) // 2,
+                            "total_samples": total_samples,
+                        })
+                        segment_index += 1
                 else:
                     logger.info("WebSocket: Empty or whitespace-only input received, skipping audio generation.")
                 
-                await websocket.send_json({"type": "end", "segment_id": segment_id})
+                await websocket.send_json({
+                    "type": "end",
+                    "segment_id": segment_id,
+                    "total_samples": total_samples,
+                    "duration_seconds": total_samples / 24000.0,
+                })
 
                 if not data.get("continue", True):
                     await websocket.send_json({"done": True})
@@ -265,3 +264,29 @@ async def get_voices():
         "default": default_voice,
         "count": len(VOICE_DETAILS)
     }
+
+@app.get("/api/status")
+async def get_status():
+    try:
+        return engine.get_status() if engine else {"device": "unknown"}
+    except Exception:
+        return {"device": "error"}
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
+
+@app.get("/readyz")
+async def readyz():
+    try:
+        st = engine.get_status() if engine else None
+        if not st:
+            raise RuntimeError("engine not initialized")
+        if st.get("device") is None:
+            raise RuntimeError("device unknown")
+        if st.get("ffmpeg_available") is False:
+            # Not fatal, but report in readiness payload
+            pass
+        return {"ok": True, **st}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=str(e))

@@ -38,11 +38,6 @@ def _compute_metrics(total_bytes: int, t0: float, t_first: float, t_end: float):
         "kb_per_s": kbps,
     }
 
-def _voice_params(voice: str):
-    if voice == "female":
-        return 0.5, 0.95, 1.15
-    return 0.3, 0.95, 1.12
-
 def _format_metrics(tag: str, m: dict):
     return (
         f"[{tag}] TTFB={m['ttfb_ms']:.0f} ms | time={m['wall_s']:.2f}s | "
@@ -51,14 +46,11 @@ def _format_metrics(tag: str, m: dict):
     )
 
 def _http_measure(base_url: str, text: str, voice: str, save_audio: bool):
-    temperature, top_p, rep = _voice_params(voice)
     url = f"{base_url}/v1/audio/speech/stream"
     payload = {
         "input": text,
         "voice": voice,
-        "temperature": temperature,
-        "top_p": top_p,
-        "repetition_penalty": rep,
+        "format": "pcm",
     }
     headers = {"Accept-Encoding": "identity", "Cache-Control": "no-store", "Content-Type": "application/json"}
     t0 = time.time()
@@ -99,13 +91,13 @@ def _http_measure(base_url: str, text: str, voice: str, save_audio: bool):
     return metrics
 
 async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool):
-    temperature, top_p, rep = _voice_params(voice)
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
     seg_id = f"seg-{uuid.uuid4().hex[:8]}"
     headers = [("Cache-Control", "no-store")]
     t_first = None
     total = 0
     t0 = time.time()
+    audio_buf = bytearray() if save_audio else None
     # Some websockets builds mis-handle extra_headers → avoid passing it
     async with websockets.connect(ws_url, max_size=None) as ws:
         await ws.send(json.dumps({
@@ -113,9 +105,7 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
             "segment_id": seg_id,
             "input": text,
             "voice": voice,
-            "temperature": temperature,
-            "top_p": top_p,
-            "repetition_penalty": rep,
+            "format": "pcm"
         }))
 
         # Receive until we get an end message
@@ -125,6 +115,8 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
                 if t_first is None:
                     t_first = time.time()
                 total += len(msg)
+                if audio_buf is not None:
+                    audio_buf.extend(msg)
             else:
                 try:
                     data = json.loads(msg)
@@ -134,7 +126,11 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
                     break
         t_end = time.time()
     metrics = _compute_metrics(total, t0, t_first or t_end, t_end)
-    # Optionally save: requires capturing all bytes; we skipped to keep memory low
+    if save_audio and total > 0 and audio_buf is not None:
+        os.makedirs("warmup_audio", exist_ok=True)
+        out = f"warmup_audio/warmup_ws_{voice}.pcm"
+        with open(out, "wb") as f:
+            f.write(audio_buf)
     return metrics
 
 def warmup_api(host="localhost", port=8000, save_audio=False):

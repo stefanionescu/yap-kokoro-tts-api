@@ -43,7 +43,7 @@ DEFAULT_VOICE_FEMALE=aoede
 DEFAULT_VOICE_MALE=michael
 LANG_CODE=a
 KOKORO_SPEED=1.0
-KOKORO_SPLIT_PATTERN=\n+
+KOKORO_SPLIT_PATTERN="\\n+"
 STREAM_CHUNK_SECONDS=0.5
 
 # Context parameters (not used by Kokoro, kept for API compat logging)
@@ -58,13 +58,12 @@ HF_HOME=
 # export HF_TOKEN in the shell environment.
 HF_TOKEN=
 
-# Keep-hot (has no effect for Kokoro but safe to keep)
-KEEP_GPU_HOT_INTERVAL=20
-KEEP_GPU_HOT_VOICE=male
-KEEP_GPU_HOT_PROMPT=.
-
 # Stream priming to defeat proxy buffering (0=off, 1=on)
 PRIME_STREAM=0
+ 
+# Optional CUDA knobs
+# KOKORO_DEVICE=cuda
+# KOKORO_GPU_MEMORY_FRACTION=0.90
 EOL
 
 echo "Setup complete! You can now run scripts/start.sh to launch the API server."

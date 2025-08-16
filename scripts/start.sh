@@ -36,6 +36,14 @@ echo "Log level: $LOG_LEVEL"
 echo "Kokoro voices: female=${DEFAULT_VOICE_FEMALE:-aoede}, male=${DEFAULT_VOICE_MALE:-michael}"
 echo "Speed: ${KOKORO_SPEED:-1.0} | Split: ${KOKORO_SPLIT_PATTERN:-\\n+} | Chunk: ${STREAM_CHUNK_SECONDS:-0.5}s"
 
+# Optional CUDA reservation/capping
+if [ -n "${KOKORO_DEVICE:-}" ]; then
+  echo "Forcing Kokoro device: $KOKORO_DEVICE"
+fi
+if [ -n "${KOKORO_GPU_MEMORY_FRACTION:-}" ]; then
+  echo "Per-process GPU memory fraction: $KOKORO_GPU_MEMORY_FRACTION"
+fi
+
 # Export HF tokens for gated models
 if [ -n "$HUGGING_FACE_HUB_TOKEN" ]; then
     export HUGGING_FACE_HUB_TOKEN
