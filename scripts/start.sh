@@ -72,6 +72,13 @@ if [ -z "${HF_HOME:-}" ]; then
     export HF_HOME="$ROOT_DIR/cache"
 fi
 
+# CUDA allocator tuning to reduce fragmentation and improve long uptimes
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128,garbage_collection_threshold:0.9
+
+# Thread limits to avoid CPU thrash on small hosts (Kokoro is GPU-bound)
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+
 # No heavy model prep needed for Kokoro; it will download via pip/hub as needed
 
 if command -v setsid >/dev/null 2>&1; then

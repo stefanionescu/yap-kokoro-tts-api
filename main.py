@@ -11,7 +11,7 @@ import contextlib
 import logging
 import asyncio
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from starlette.websockets import WebSocketState
 
 from pydantic import BaseModel
@@ -139,14 +139,14 @@ async def tts_stream_ws(websocket: WebSocket):
             if input_text:
                 logger.info(f"WebSocket: Generating audio for input: '{input_text[:50]}...' (length: {len(input_text)}) speed={speed}")
                 
-                # Set per-request speed override
-                if speed is not None:
-                    os.environ["KOKORO_SPEED"] = str(max(0.5, min(2.0, float(speed))))
+                # Clamp speed to safe range
+                safe_speed = max(0.5, min(2.0, float(speed))) if speed is not None else None
                 
                 audio_generator = engine.generate_speech_async(
                     prompt=input_text,
                     voice=voice,
                     output_format=out_format,
+                    speed=safe_speed,
                 )
 
                 # WS send controls

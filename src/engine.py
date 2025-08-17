@@ -166,15 +166,15 @@ class KokoroEngine:
         return dict(self._custom_voices)
 
     def start_worker(self) -> None:
-        # Ensure exactly max_concurrent workers running
+        # Run exactly ONE scheduler loop; it interleaves up to self.active_limit streams.
         alive = [t for t in self._worker_tasks if not t.done()]
-        missing = self.max_concurrent - len(alive)
-        for _ in range(max(0, missing)):
-            t = asyncio.create_task(self._worker_loop())
-            alive.append(t)
-        self._worker_tasks = alive
-        if missing > 0:
-            logger.info("Kokoro worker started (%d concurrent)", len(self._worker_tasks))
+        if alive:
+            self._worker_tasks = alive
+            return
+        t = asyncio.create_task(self._worker_loop())
+        self._worker_tasks = [t]
+        logger.info("Kokoro RR worker started (active_limit=%d, quantum=%d bytes)",
+                    self.active_limit, self.quantum_bytes)
 
     async def stop_worker(self) -> None:
         try:
@@ -193,7 +193,7 @@ class KokoroEngine:
         active = deque()  # items: (job, agen) where agen is async generator of PCM bytes
 
         async def start_from_job(job: "_TTSJob"):
-            agen = self._synthesize_stream_pieces(job.pieces, job.voice, job.output_format)
+            agen = self._synthesize_stream_pieces(job.pieces, job.voice, job.output_format, job.speed)
             return (job, agen)
 
         while True:
@@ -238,7 +238,7 @@ class KokoroEngine:
                 # Not finished; rotate back
                 active.append((job, agen))
 
-    async def _synthesize_stream_pieces(self, pieces: List[str], voice: str, output_format: str) -> AsyncGenerator[bytes, None]:
+    async def _synthesize_stream_pieces(self, pieces: List[str], voice: str, output_format: str, speed: Optional[float] = None) -> AsyncGenerator[bytes, None]:
         selected_voice = voice or "female"
         if selected_voice not in self.available_voices:
             selected_voice = "female"
@@ -255,14 +255,14 @@ class KokoroEngine:
             kokoro_voice = "am_michael"
 
         def pipeline_for(piece: str):
-            # Use current KOKORO_SPEED from environment (allows per-request override)
-            current_speed = float(os.getenv("KOKORO_SPEED", str(self.speed)))
+            # Use per-request speed if provided, otherwise engine default
+            eff_speed = float(speed if speed is not None else self.speed)
             # Try common Kokoro voice IDs if mapping fails silently
             try:
                 return self.pipeline(
                     piece,
                     voice=kokoro_voice,
-                    speed=current_speed,
+                    speed=eff_speed,
                     split_pattern=self.split_pattern,
                 )
             except Exception as e:
@@ -271,7 +271,7 @@ class KokoroEngine:
                 return self.pipeline(
                     piece,
                     voice=alt_voice,
-                    speed=current_speed,
+                    speed=eff_speed,
                     split_pattern=self.split_pattern,
                 )
 
@@ -451,7 +451,7 @@ class KokoroEngine:
         return [p for p in [first, rest] if p]
 
     async def generate_speech_async(
-        self, prompt: str, voice: str | None = None, output_format: str = "pcm"
+        self, prompt: str, voice: str | None = None, output_format: str = "pcm", speed: Optional[float] = None
     ) -> AsyncGenerator[bytes, None]:
         """
         Enqueue a synthesis job and stream encoded bytes (default PCM16 @ 24 kHz).
@@ -464,9 +464,9 @@ class KokoroEngine:
         pieces = self._segment_for_fast_ttfb(text)
         first = [pieces[0]] if pieces else []
         rest = pieces[1:] if len(pieces) > 1 else []
-        await self._pri_queue.put(_TTSJob(pieces=first, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=(len(rest)==0), priority=True))
+        await self._pri_queue.put(_TTSJob(pieces=first, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=(len(rest)==0), priority=True, speed=speed))
         if rest:
-            await self._job_queue.put(_TTSJob(pieces=rest, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=True, priority=False))
+            await self._job_queue.put(_TTSJob(pieces=rest, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=True, priority=False, speed=speed))
 
         while True:
             chunk = await out_q.get()
@@ -516,5 +516,6 @@ class _TTSJob:
     out_queue: asyncio.Queue
     end_stream: bool
     priority: bool
+    speed: Optional[float] = None
 
 
