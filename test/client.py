@@ -23,6 +23,7 @@ import time
 import uuid
 import shutil
 import subprocess
+from urllib.parse import urlsplit
 
 import websockets
 
@@ -32,7 +33,7 @@ SAMPLE_RATE = 24000
 def build_ffmpeg_cmd(output_path: str, output_format: str) -> list[str]:
     """Return ffmpeg command to encode from stdin s16le 24k mono to desired format."""
     base = [
-        "ffmpeg", "-loglevel", "error",
+        "ffmpeg", "-y", "-loglevel", "error",
         "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "-",
     ]
     if output_format == "wav":
@@ -46,13 +47,36 @@ def build_ffmpeg_cmd(output_path: str, output_format: str) -> list[str]:
     raise ValueError(f"Unsupported format for ffmpeg: {output_format}")
 
 
+def _sanitize_host_and_scheme(host: str) -> tuple[str, bool]:
+    """Strip scheme and trailing slashes. Return (host[:port?], tls_from_scheme)."""
+    h = (host or "").strip()
+    tls_from_scheme = False
+    if "://" in h:
+        parts = urlsplit(h)
+        # netloc contains host[:port]; if missing, parts.path may carry it
+        h = parts.netloc or parts.path
+        tls_from_scheme = parts.scheme in ("https", "wss")
+    h = h.strip().strip("/")
+    return h, tls_from_scheme
+
+
+def _is_runpod_proxy_host(host: str) -> bool:
+    h = host.lower()
+    return ("proxy.runpod.net" in h) or h.endswith("runpod.net")
+
+
 async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_path: str, out_format: str, use_tls: bool = False) -> int:
     """Connect to WS, stream PCM, encode to chosen format via ffmpeg or write raw PCM."""
-    scheme = "wss" if use_tls else "ws"
-    if use_tls and host.endswith("proxy.runpod.net"):
-        ws_url = f"{scheme}://{host}/v1/audio/speech/stream/ws"
+    norm_host, tls_from_scheme = _sanitize_host_and_scheme(host)
+    force_tls = use_tls or tls_from_scheme or _is_runpod_proxy_host(norm_host)
+    if _is_runpod_proxy_host(norm_host):
+        # RunPod proxy terminates TLS and forwards to container; no explicit port in public URL
+        ws_url = f"wss://{norm_host}/v1/audio/speech/stream/ws"
     else:
-        ws_url = f"{scheme}://{host}:{port}/v1/audio/speech/stream/ws"
+        scheme = "wss" if force_tls else "ws"
+        # Only append port if it's not already present
+        netloc = norm_host if ":" in norm_host else f"{norm_host}:{port}"
+        ws_url = f"{scheme}://{netloc}/v1/audio/speech/stream/ws"
     segment_id = f"seg-{uuid.uuid4().hex[:8]}"
 
     proc: subprocess.Popen | None = None
@@ -113,7 +137,7 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="WebSocket Kokoro TTS client → save audio via ffmpeg")
-    parser.add_argument("--host", default="7v9iogacp102xj-8000.proxy.runpod.net", help="API host (RunPod proxy host)")
+    parser.add_argument("--host", default="7v9iogacp102xj-8000.proxy.runpod.net", help="API host (RunPod proxy host or hostname[:port])")
     parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
     parser.add_argument("--voice", choices=["female", "male"], default="female", help="Voice to use")
     parser.add_argument("--text", default="I would love to suck that juicy dick!", help="Input text to synthesize")
@@ -126,7 +150,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     try:
-        rc = asyncio.run(stream_ws_and_save(args.host, args.port, args.voice, args.text, args.out, args.format, args.tls or args.host.endswith("runpod.net")))
+        # Determine TLS pref: explicit flag, scheme in host, or RunPod proxy host
+        norm_host, tls_from_scheme = _sanitize_host_and_scheme(args.host)
+        tls_pref = args.tls or tls_from_scheme or _is_runpod_proxy_host(norm_host)
+        rc = asyncio.run(stream_ws_and_save(norm_host, args.port, args.voice, args.text, args.out, args.format, tls_pref))
         if rc != 0:
             sys.exit(rc)
     except KeyboardInterrupt:

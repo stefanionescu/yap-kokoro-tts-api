@@ -218,42 +218,53 @@ async def tts_stream_ws(websocket: WebSocket):
             start_time = time.perf_counter()
             total_samples = 0
             segment_index = 0
+            # Send start; break cleanly if client is already gone
             try:
                 await websocket.send_json({"type": "start", "segment_id": segment_id})
-                # WS primer
-                if os.getenv("PRIME_STREAM", "0") == "1":
-                    try:
-                        await websocket.send_bytes(b"\0" * int(os.getenv("PRIME_BYTES", "512")))
-                    except Exception:
-                        pass
+            except Exception:
+                break
 
-                if input_text:
-                    logger.info(f"WebSocket: Generating audio for input: '{input_text[:50]}...' (length: {len(input_text)})")
-                    audio_generator = engine.generate_speech_async(
-                        prompt=input_text,
-                        voice=voice,
-                        output_format=out_format,
-                    )
+            # WS primer (optional)
+            if os.getenv("PRIME_STREAM", "0") == "1":
+                with contextlib.suppress(Exception):
+                    await websocket.send_bytes(b"\0" * int(os.getenv("PRIME_BYTES", "512")))
 
-                    first_chunk = True
+            if input_text:
+                logger.info(f"WebSocket: Generating audio for input: '{input_text[:50]}...' (length: {len(input_text)})")
+                audio_generator = engine.generate_speech_async(
+                    prompt=input_text,
+                    voice=voice,
+                    output_format=out_format,
+                )
+
+                first_chunk = True
+                try:
                     async for chunk in audio_generator:
                         if first_chunk:
                             ttfb = time.perf_counter() - start_time
                             logger.info(f"WebSocket: Time to first audio chunk (TTFB): {ttfb*1000:.2f} ms")
                             first_chunk = False
-                        await websocket.send_bytes(chunk)
-                        # send meta for each chunk
-                        total_samples += len(chunk) // 2  # 2 bytes per sample
+                        try:
+                            await websocket.send_bytes(chunk)
+                        except Exception:
+                            break
+                        total_samples += len(chunk) // 2
                         if (segment_index % 10) == 0:
-                            await websocket.send_json({
-                                "type": "meta",
-                                "segment": segment_index,
-                                "total_samples": total_samples,
-                            })
+                            with contextlib.suppress(Exception):
+                                await websocket.send_json({
+                                    "type": "meta",
+                                    "segment": segment_index,
+                                    "total_samples": total_samples,
+                                })
                         segment_index += 1
-                else:
-                    logger.info("WebSocket: Empty or whitespace-only input received, skipping audio generation.")
-                
+                except Exception as e:
+                    logger.exception(f"WebSocket: Error during audio generation: {str(e)}")
+                    break
+            else:
+                logger.info("WebSocket: Empty or whitespace-only input received, skipping audio generation.")
+
+            # Send end marker; ignore errors if the client already closed
+            with contextlib.suppress(Exception):
                 await websocket.send_json({
                     "type": "end",
                     "segment_id": segment_id,
@@ -261,13 +272,7 @@ async def tts_stream_ws(websocket: WebSocket):
                     "duration_seconds": total_samples / 24000.0,
                 })
 
-                if not data.get("continue", True):
-                    await websocket.send_json({"done": True})
-                    break
-
-            except Exception as e:
-                logger.exception(f"WebSocket: Error during audio generation: {str(e)}")
-                await websocket.send_json({"error": str(e), "done": True})
+            if not data.get("continue", True):
                 break
 
     except WebSocketDisconnect:
@@ -276,8 +281,9 @@ async def tts_stream_ws(websocket: WebSocket):
         logger.error(f"An unexpected error occurred in the websocket endpoint: {e}")
     finally:
         logger.info("Closing websocket connection.")
-        if websocket.client_state == WebSocketState.CONNECTED:
-            await websocket.close()
+        with contextlib.suppress(Exception):
+            if websocket.client_state == WebSocketState.CONNECTED:
+                await websocket.close()
 
 @app.get("/api/voices", response_model=VoicesResponse)
 async def get_voices():
