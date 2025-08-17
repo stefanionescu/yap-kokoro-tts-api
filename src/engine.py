@@ -255,12 +255,14 @@ class KokoroEngine:
             kokoro_voice = "am_michael"
 
         def pipeline_for(piece: str):
+            # Use current KOKORO_SPEED from environment (allows per-request override)
+            current_speed = float(os.getenv("KOKORO_SPEED", str(self.speed)))
             # Try common Kokoro voice IDs if mapping fails silently
             try:
                 return self.pipeline(
                     piece,
                     voice=kokoro_voice,
-                    speed=self.speed,
+                    speed=current_speed,
                     split_pattern=self.split_pattern,
                 )
             except Exception as e:
@@ -269,7 +271,7 @@ class KokoroEngine:
                 return self.pipeline(
                     piece,
                     voice=alt_voice,
-                    speed=self.speed,
+                    speed=current_speed,
                     split_pattern=self.split_pattern,
                 )
 

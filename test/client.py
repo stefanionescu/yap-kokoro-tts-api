@@ -4,12 +4,16 @@ Kokoro TTS WebSocket client for streaming audio and saving to a listenable forma
 
 Examples:
   # WAV output (recommended)
-  python client.py --host <RUNPOD_PUBLIC_IP> --port 8000 \
+  python test/client.py --host <RUNPOD_PUBLIC_IP> \
     --text "Hello there" --voice female --out hello.wav --format wav
 
-  # Ogg/Opus output
-  python client.py --host <RUNPOD_PUBLIC_IP> --port 8000 \
-    --text "Hello there" --voice female --out hello.ogg --format ogg
+  # Ogg/Opus output with custom speed
+  python test/client.py --host <RUNPOD_PUBLIC_IP> \
+    --text "Hello there" --voice female --out hello.ogg --format ogg --speed 1.2
+
+  # Fast generation
+  python test/client.py --host <RUNPOD_PUBLIC_IP> \
+    --text "Hello there" --speed 2.0
 
 Requires ffmpeg for wav/ogg/mp3. If ffmpeg is unavailable and --format pcm is used,
 raw 24kHz mono PCM16 is written.
@@ -27,7 +31,7 @@ from urllib.parse import urlsplit
 
 import websockets
 
-SAMPLE_RATE = 24000
+SAMPLE_RATE = 24000  # Kokoro outputs 24kHz PCM16 mono
 
 
 def build_ffmpeg_cmd(output_path: str, output_format: str, speed: float = 1.4) -> list[str]:
@@ -151,19 +155,17 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
     print(f"Saved ~{total} bytes of PCM to {out_path}")
     return 0 if total > 0 else 3
 
-
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="WebSocket Kokoro TTS client → save audio via ffmpeg")
     parser.add_argument("--host", default="7v9iogacp102xj-8000.proxy.runpod.net", help="API host (RunPod proxy host or hostname[:port])")
     parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
     parser.add_argument("--voice", choices=["female", "male"], default="female", help="Voice to use")
-    parser.add_argument("--text", default="I would love to suck that juicy dick!", help="Input text to synthesize")
+    parser.add_argument("--text", default="That's amazing! Congratulations for an amazing job!", help="Input text to synthesize")
     parser.add_argument("--out", default="hello.wav", help="Output file path (wav/ogg/mp3/pcm)")
     parser.add_argument("--format", choices=["wav", "ogg", "opus", "mp3", "pcm"], default="wav", help="Output format")
     parser.add_argument("--speed", type=float, default=1.4, help="Speech speed multiplier (0.5-2.0, default: 1.4 to match server)")
     parser.add_argument("--tls", action="store_true", help="Use wss:// (TLS)")
     return parser.parse_args()
-
 
 def main() -> None:
     args = parse_args()
@@ -177,7 +179,6 @@ def main() -> None:
     except KeyboardInterrupt:
         print("Interrupted")
         sys.exit(130)
-
 
 if __name__ == "__main__":
     main()

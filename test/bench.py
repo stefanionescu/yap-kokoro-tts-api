@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-Simple load/latency benchmark for Kokoro TTS.
+Simple load/latency benchmark for Kokoro TTS WebSocket API.
 
 Measures TTFB, wall time, audio seconds, RTF, xRT and throughput for a given
 number of requests, split evenly across voices (female/male), with configurable
-concurrency and protocol (HTTP streaming or WebSocket).
+concurrency using WebSocket protocol only.
 
 Examples (run on pod):
-  python scripts/bench.py --proto http  --n 40 --concurrency 12
-  python scripts/bench.py --proto ws    --n 40 --concurrency 12
-  python scripts/bench.py --proto both  --n 40 --concurrency 12
+  python test/bench.py --n 40 --concurrency 12
+  python test/bench.py --n 100 --concurrency 8 --host your-host
 
 Host/port default to localhost:8000; override with --host/--port.
 """
@@ -23,7 +22,7 @@ import statistics as stats
 from typing import Dict, List, Tuple
 
 import numpy as np
-import requests
+
 import websockets
 
 
@@ -66,28 +65,7 @@ def _metrics(total_bytes: int, t0: float, t_first: float, t_end: float) -> Dict[
     }
 
 
-def _http_one(base_url: str, text: str, voice: str) -> Dict[str, float]:
-    url = f"{base_url}/v1/audio/speech/stream"
-    payload = {"input": text, "voice": voice, "format": "pcm"}
-    headers = {
-        "Accept-Encoding": "identity",
-        "Cache-Control": "no-store",
-        "Content-Type": "application/json",
-        "Connection": "keep-alive",
-    }
-    t0 = time.time()
-    total = 0
-    t_first = None
-    with requests.post(url, json=payload, stream=True, headers=headers, timeout=(5, 120)) as r:
-        r.raise_for_status()
-        for chunk in r.iter_content(chunk_size=4096):
-            if not chunk:
-                continue
-            if t_first is None:
-                t_first = time.time()
-            total += len(chunk)
-    t_end = time.time()
-    return _metrics(total, t0, t_first or t_end, t_end)
+
 
 
 async def _ws_one(base_url: str, text: str, voice: str) -> Dict[str, float]:
@@ -164,56 +142,26 @@ async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int) 
     return results
 
 
-def bench_http(base_url: str, text: str, total_reqs: int, concurrency: int) -> List[Dict[str, float]]:
-    import concurrent.futures as cf
-    results: List[Dict[str, float]] = []
-    errors: List[str] = []
 
-    def one(i: int) -> Tuple[int, Dict[str, float] | None, str | None]:
-        voice = "female" if (i % 2 == 0) else "male"
-        try:
-            r = _http_one(base_url, text, voice)
-            return (i, r, None)
-        except Exception as e:
-            return (i, None, str(e))
-
-    with cf.ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futs = [ex.submit(one, i) for i in range(total_reqs)]
-        for fut in cf.as_completed(futs):
-            i, r, err = fut.result()
-            if err is None and r is not None:
-                results.append(r)
-            else:
-                errors.append(err or "unknown")
-    if errors:
-        print(f"HTTP errors: {len(errors)} (showing first 3): {errors[:3]}")
-    return results
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="localhost")
     ap.add_argument("--port", type=int, default=8000)
-    ap.add_argument("--proto", choices=["http", "ws", "both"], default="both")
+    ap.add_argument("--proto", choices=["ws"], default="ws")
     ap.add_argument("--n", type=int, default=40, help="total requests")
     ap.add_argument("--concurrency", type=int, default=12)
     ap.add_argument("--text", default=DEFAULT_TEXT)
     args = ap.parse_args()
 
     base_url = f"http://{args.host}:{args.port}"
-    print(f"Benchmark → {args.proto} | n={args.n} | conc={args.concurrency} | host={args.host}:{args.port}")
+    print(f"Benchmark → WebSocket | n={args.n} | conc={args.concurrency} | host={args.host}:{args.port}")
 
-    if args.proto in ("http", "both"):
-        t0 = time.time()
-        http_res = bench_http(base_url, args.text, args.n, args.concurrency)
-        summarize("HTTP", http_res)
-        print(f"HTTP elapsed: {time.time()-t0:.2f}s")
-
-    if args.proto in ("ws", "both"):
-        t0 = time.time()
-        ws_res = asyncio.run(bench_ws(base_url, args.text, args.n, args.concurrency))
-        summarize("WS", ws_res)
-        print(f"WS elapsed: {time.time()-t0:.2f}s")
+    t0 = time.time()
+    ws_res = asyncio.run(bench_ws(base_url, args.text, args.n, args.concurrency))
+    summarize("WebSocket", ws_res)
+    print(f"WebSocket elapsed: {time.time()-t0:.2f}s")
 
 
 if __name__ == "__main__":
