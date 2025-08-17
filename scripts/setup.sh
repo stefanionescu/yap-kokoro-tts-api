@@ -44,20 +44,12 @@ DEFAULT_VOICE_MALE=am_michael
 LANG_CODE=a
 KOKORO_SPEED=1.0
 STREAM_CHUNK_SECONDS=0.05
-FIRST_SEGMENT_MAX_WORDS=3
+FIRST_SEGMENT_MAX_WORDS=5
 FIRST_SEGMENT_BOUNDARIES=.,?!;:
 
 # Context parameters (not used by Kokoro, kept for API compat logging)
 NUM_CTX=8192
 NUM_PREDICT=49152
-
-# HuggingFace cache directory (for model downloads)
-HF_HOME=
-
-# Hugging Face auth token for gated models (set before running start.sh)
-# Get one from https://huggingface.co/settings/tokens and paste below or
-# export HF_TOKEN in the shell environment.
-HF_TOKEN=
 
 # Stream priming to defeat proxy buffering (0=off, 1=on)
 PRIME_STREAM=0

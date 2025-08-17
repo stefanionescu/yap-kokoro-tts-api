@@ -93,13 +93,12 @@ def _http_measure(base_url: str, text: str, voice: str, save_audio: bool):
 async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool):
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
     seg_id = f"seg-{uuid.uuid4().hex[:8]}"
-    headers = [("Cache-Control", "no-store")]
     t_first = None
     total = 0
     t0 = time.time()
     audio_buf = bytearray() if save_audio else None
-    # Some websockets builds mis-handle extra_headers → avoid passing it
-    async with websockets.connect(ws_url, max_size=None, compression=None) as ws:
+    
+    async with websockets.connect(ws_url, max_size=None, compression=None, ping_interval=20, ping_timeout=20) as ws:
         await ws.send(json.dumps({
             "continue": True,
             "segment_id": seg_id,
@@ -110,7 +109,11 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
 
         # Receive until we get an end message
         while True:
-            msg = await ws.recv()
+            try:
+                msg = await asyncio.wait_for(ws.recv(), timeout=10)
+            except asyncio.TimeoutError:
+                raise RuntimeError("WS timeout waiting for first message/chunk")
+                
             if isinstance(msg, (bytes, bytearray)):
                 if t_first is None:
                     t_first = time.time()
@@ -120,10 +123,14 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
             else:
                 try:
                     data = json.loads(msg)
+                    if data.get("type") == "start":
+                        logger.info("[WS] got start")
+                    elif data.get("type") == "meta":
+                        logger.info(f"[WS] meta: seg={data.get('segment')} samples={data.get('total_samples')}")
+                    elif data.get("type") == "end":
+                        break
                 except Exception:
                     continue
-                if isinstance(data, dict) and data.get("type") == "end":
-                    break
         t_end = time.time()
     metrics = _compute_metrics(total, t0, t_first or t_end, t_end)
     if save_audio and total > 0 and audio_buf is not None:

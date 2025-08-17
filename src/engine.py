@@ -183,13 +183,17 @@ class KokoroEngine:
     async def _worker_loop(self) -> None:
         logger.info("Kokoro worker loop running")
         while True:
-            # Priority queue first for first-chunk jobs
-            if not self._pri_queue.empty():
-                job = await self._pri_queue.get()
-                from_pri = True
-            else:
-                job = await self._job_queue.get()
-                from_pri = False
+            # Wait on both queues without starvation
+            pri_task = asyncio.create_task(self._pri_queue.get())
+            reg_task = asyncio.create_task(self._job_queue.get())
+            done, pending = await asyncio.wait(
+                {pri_task, reg_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            # Cancel whichever didn't fire
+            for t in pending:
+                t.cancel()
+            job = next(iter(done)).result()
             try:
                 async for chunk in self._synthesize_stream_pieces(job.pieces, job.voice, job.output_format):
                     await job.out_queue.put(chunk)
@@ -200,7 +204,11 @@ class KokoroEngine:
                 if job.end_stream:
                     await job.out_queue.put(None)  # sentinel
                 try:
-                    (self._pri_queue if from_pri else self._job_queue).task_done()
+                    # Mark task_done on the right queue
+                    if pri_task in done:
+                        self._pri_queue.task_done()
+                    else:
+                        self._job_queue.task_done()
                 except Exception:
                     pass
 
