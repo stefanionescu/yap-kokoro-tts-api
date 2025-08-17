@@ -119,6 +119,13 @@ class KokoroEngine:
         self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
         self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
         self._worker_tasks: list[asyncio.Task] = []
+        
+        # Round-robin scheduling parameters
+        self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", "16384")))  # ~0.34s @ 24k PCM16
+        self.active_limit = self.max_concurrent
+        
+        # Admission control
+        self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", "250"))
 
         # Extend available voices with custom names
         self._refresh_available_voices()
@@ -181,36 +188,55 @@ class KokoroEngine:
             self._worker_tasks = []
 
     async def _worker_loop(self) -> None:
-        logger.info("Kokoro worker loop running")
+        from collections import deque
+        logger.info("Kokoro RR scheduler loop running")
+        active = deque()  # items: (job, agen) where agen is async generator of PCM bytes
+
+        async def start_from_job(job: "_TTSJob"):
+            agen = self._synthesize_stream_pieces(job.pieces, job.voice, job.output_format)
+            return (job, agen)
+
         while True:
-            # Wait on both queues without starvation
-            pri_task = asyncio.create_task(self._pri_queue.get())
-            reg_task = asyncio.create_task(self._job_queue.get())
-            done, pending = await asyncio.wait(
-                {pri_task, reg_task},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            # Cancel whichever didn't fire
-            for t in pending:
-                t.cancel()
-            job = next(iter(done)).result()
+            # Fill active set up to limit
+            while len(active) < self.active_limit:
+                # pull priority if available else normal; don't starve
+                if not self._pri_queue.empty():
+                    job = await self._pri_queue.get()
+                    self._pri_queue.task_done()
+                else:
+                    try:
+                        job = await asyncio.wait_for(self._job_queue.get(), timeout=0.005)
+                        self._job_queue.task_done()
+                    except asyncio.TimeoutError:
+                        break
+                active.append(await start_from_job(job))
+
+            if not active:
+                # nothing to do; small sleep so we don't spin
+                await asyncio.sleep(0.001)
+                continue
+
+            # Round-robin one quantum
+            job, agen = active.popleft()
+            sent = 0
             try:
-                async for chunk in self._synthesize_stream_pieces(job.pieces, job.voice, job.output_format):
+                while sent < self.quantum_bytes:
+                    chunk = await anext(agen)
+                    if not chunk:
+                        continue
                     await job.out_queue.put(chunk)
+                    sent += len(chunk)
+            except StopAsyncIteration:
+                # done
+                if job.end_stream:
+                    await job.out_queue.put(None)
             except Exception as e:
                 logger.exception("Worker error: %s", e)
-                # signal error by closing stream
-            finally:
                 if job.end_stream:
-                    await job.out_queue.put(None)  # sentinel
-                try:
-                    # Mark task_done on the right queue
-                    if pri_task in done:
-                        self._pri_queue.task_done()
-                    else:
-                        self._job_queue.task_done()
-                except Exception:
-                    pass
+                    await job.out_queue.put(None)
+            else:
+                # Not finished; rotate back
+                active.append((job, agen))
 
     async def _synthesize_stream_pieces(self, pieces: List[str], voice: str, output_format: str) -> AsyncGenerator[bytes, None]:
         selected_voice = voice or "female"
@@ -338,6 +364,13 @@ class KokoroEngine:
         finally:
             with contextlib.suppress(Exception):
                 proc.kill()
+
+    def can_accept(self) -> bool:
+        """Check if we can accept a new request within SLA."""
+        q = self._pri_queue.qsize() + self._job_queue.qsize()
+        # back-of-envelope: one quantum per active slot before we start
+        est_wait_ms = (q / max(1, self.active_limit)) * (1000.0 * self.stream_chunk_samples / float(SAMPLE_RATE))
+        return (not self._job_queue.full()) and est_wait_ms < self.queue_wait_sla_ms
 
     def validate_voice(self, voice: str) -> None:
         if voice not in self.available_voices:

@@ -30,20 +30,34 @@ import websockets
 SAMPLE_RATE = 24000
 
 
-def build_ffmpeg_cmd(output_path: str, output_format: str) -> list[str]:
+def build_ffmpeg_cmd(output_path: str, output_format: str, speed: float = 1.4) -> list[str]:
     """Return ffmpeg command to encode from stdin s16le 24k mono to desired format."""
     base = [
         "ffmpeg", "-y", "-loglevel", "error",
         "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "-",
     ]
+    
+    # Apply tempo correction to compensate for server-side speed up
+    # If server generates at 1.4x speed, we slow down by 1/1.4 to get normal playback
+    tempo_filter = f"atempo={1.0/speed:.3f}" if speed != 1.0 else None
+    
     if output_format == "wav":
-        return base + ["-c:a", "pcm_s16le", "-f", "wav", output_path]
+        if tempo_filter:
+            return base + ["-af", tempo_filter, "-c:a", "pcm_s16le", "-f", "wav", output_path]
+        else:
+            return base + ["-c:a", "pcm_s16le", "-f", "wav", output_path]
     if output_format in {"ogg", "opus"}:
         bitrate = os.getenv("OPUS_BITRATE", "48k")
         application = os.getenv("OPUS_APPLICATION", "audio")
-        return base + ["-c:a", "libopus", "-b:a", bitrate, "-application", application, "-f", "ogg", output_path]
+        if tempo_filter:
+            return base + ["-af", tempo_filter, "-c:a", "libopus", "-b:a", bitrate, "-application", application, "-f", "ogg", output_path]
+        else:
+            return base + ["-c:a", "libopus", "-b:a", bitrate, "-application", application, "-f", "ogg", output_path]
     if output_format == "mp3":
-        return base + ["-c:a", "libmp3lame", "-b:a", os.getenv("MP3_BITRATE", "192k"), "-f", "mp3", output_path]
+        if tempo_filter:
+            return base + ["-af", tempo_filter, "-c:a", "libmp3lame", "-b:a", os.getenv("MP3_BITRATE", "192k"), "-f", "mp3", output_path]
+        else:
+            return base + ["-c:a", "libmp3lame", "-b:a", os.getenv("MP3_BITRATE", "192k"), "-f", "mp3", output_path]
     raise ValueError(f"Unsupported format for ffmpeg: {output_format}")
 
 
@@ -65,7 +79,7 @@ def _is_runpod_proxy_host(host: str) -> bool:
     return ("proxy.runpod.net" in h) or h.endswith("runpod.net")
 
 
-async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_path: str, out_format: str, use_tls: bool = False) -> int:
+async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_path: str, out_format: str, use_tls: bool = False, speed: float = 1.4) -> int:
     """Connect to WS, stream PCM, encode to chosen format via ffmpeg or write raw PCM."""
     norm_host, tls_from_scheme = _sanitize_host_and_scheme(host)
     force_tls = use_tls or tls_from_scheme or _is_runpod_proxy_host(norm_host)
@@ -87,11 +101,13 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
         if not shutil.which("ffmpeg"):
             print("ffmpeg not found; install it or use --format pcm", file=sys.stderr)
             return 2
-        proc = subprocess.Popen(build_ffmpeg_cmd(out_path, out_format), stdin=subprocess.PIPE)
+        proc = subprocess.Popen(build_ffmpeg_cmd(out_path, out_format, speed), stdin=subprocess.PIPE)
 
     t0 = time.time()
     first = True
     total = 0
+    
+    print(f"Connecting to {ws_url} with speed={speed:.1f}x (tempo correction: {1.0/speed:.3f}x)")
 
     # Avoid extra_headers; some builds mis-handle them
     async with websockets.connect(ws_url, max_size=None) as ws:
@@ -101,6 +117,7 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
             "input": text,
             "voice": voice,
             "format": "pcm",
+            "speed": speed,
         }))
 
         while True:
@@ -143,6 +160,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--text", default="I would love to suck that juicy dick!", help="Input text to synthesize")
     parser.add_argument("--out", default="hello.wav", help="Output file path (wav/ogg/mp3/pcm)")
     parser.add_argument("--format", choices=["wav", "ogg", "opus", "mp3", "pcm"], default="wav", help="Output format")
+    parser.add_argument("--speed", type=float, default=1.4, help="Speech speed multiplier (0.5-2.0, default: 1.4 to match server)")
     parser.add_argument("--tls", action="store_true", help="Use wss:// (TLS)")
     return parser.parse_args()
 
@@ -153,7 +171,7 @@ def main() -> None:
         # Determine TLS pref: explicit flag, scheme in host, or RunPod proxy host
         norm_host, tls_from_scheme = _sanitize_host_and_scheme(args.host)
         tls_pref = args.tls or tls_from_scheme or _is_runpod_proxy_host(norm_host)
-        rc = asyncio.run(stream_ws_and_save(norm_host, args.port, args.voice, args.text, args.out, args.format, tls_pref))
+        rc = asyncio.run(stream_ws_and_save(norm_host, args.port, args.voice, args.text, args.out, args.format, tls_pref, args.speed))
         if rc != 0:
             sys.exit(rc)
     except KeyboardInterrupt:

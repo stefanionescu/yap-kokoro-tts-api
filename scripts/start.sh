@@ -31,7 +31,7 @@ PORT=${PORT:-8000}
 HOST=${HOST:-"0.0.0.0"}
 
 echo "Starting Kokoro TTS API server on $HOST:$PORT..."
-echo "Model: $MODEL_NAME (quantization: $QUANTIZATION)"
+echo "Model: $MODEL_NAME"
 echo "Log level: $LOG_LEVEL"
 echo "Kokoro voices: female=${DEFAULT_VOICE_FEMALE:-aoede}, male=${DEFAULT_VOICE_MALE:-michael}"
 echo "Speed: ${KOKORO_SPEED:-1.0} | Split: ${KOKORO_SPLIT_PATTERN:-\\n+} | Chunk: ${STREAM_CHUNK_SECONDS:-0.05}s"
@@ -76,7 +76,7 @@ fi
 
 if command -v setsid >/dev/null 2>&1; then
   # Launch uvicorn in a dedicated process group so we can kill the whole tree by PGID (Linux)
-  setsid bash -lc "uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1 --http httptools --loop uvloop --timeout-keep-alive 120" \
+  setsid bash -lc "uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1 --http httptools --loop uvloop --ws websockets --timeout-keep-alive 120" \
     > server.log 2>&1 < /dev/null &
   SVR_PID=$!
   SVR_PGID=$(ps -o pgid= -p "$SVR_PID" | tr -d ' ')
@@ -85,7 +85,7 @@ if command -v setsid >/dev/null 2>&1; then
   echo "[start] server pid=$SVR_PID pgid=$SVR_PGID (logs at server.log)"
 else
   # macOS fallback without setsid
-  nohup uvicorn main:app --host "$HOST" --port "$PORT" --log-level "${LOG_LEVEL,,}" --workers 1 --http httptools --loop uvloop --timeout-keep-alive 120 \
+  nohup uvicorn main:app --host "$HOST" --port "$PORT" --log-level "${LOG_LEVEL,,}" --workers 1 --http httptools --loop uvloop --ws websockets --timeout-keep-alive 120 \
     > server.log 2>&1 &
   SVR_PID=$!
   echo "$SVR_PID" > server.pid

@@ -63,12 +63,6 @@ async def lifespan(app: FastAPI):
     """Initializes the TTS engine on application startup."""
     global engine, VOICE_DETAILS
     
-    # Get configuration from environment variables
-    model_name = os.getenv("MODEL_NAME", "hexgrad/Kokoro-82M")
-    quantization = os.getenv("QUANTIZATION", "none")
-    
-    logger.info(f"Initializing TTS engine with model={model_name}, quantization={quantization}")
-
     # Torch perf knobs (small but free throughput/latency wins)
     try:
         torch.set_float32_matmul_precision("high")
@@ -85,7 +79,7 @@ async def lifespan(app: FastAPI):
     engine.start_worker()
     
     # Log Kokoro settings instead
-    logger.info("Kokoro model initialized: %s (quant=%s)", model_name, quantization)
+    logger.info("Kokoro model initialized")
     
     # Define gender for the available voices
     voice_genders = {
@@ -119,6 +113,10 @@ async def tts_stream(data: TTSRequest):
     Generates audio speech from text in a streaming fashion.
     This endpoint is optimized for low latency (Time to First Byte).
     """
+    # Admission control
+    if not engine.can_accept():
+        raise HTTPException(status_code=429, detail="busy", headers={"Retry-After": "1"})
+    
     start_time = time.perf_counter()
     voice = data.voice
     
@@ -177,6 +175,10 @@ async def tts_stream(data: TTSRequest):
 @app.post('/v1/audio/speech')
 async def tts_sync(data: TTSRequest):
     """OpenAI-style sync endpoint that returns the full audio body."""
+    # Admission control
+    if not engine.can_accept():
+        raise HTTPException(status_code=429, detail="busy", headers={"Retry-After": "1"})
+    
     voice = data.voice
     out_format = data.format.lower() if data.format else "pcm"
     try:
@@ -198,6 +200,13 @@ async def tts_sync(data: TTSRequest):
 async def tts_stream_ws(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket connection open")
+    
+    # Admission control for WS
+    if not engine.can_accept():
+        await websocket.send_json({"type": "error", "code": "busy"})
+        await websocket.close(code=1013)  # Try again later
+        return
+    
     try:
         while True:
             data = await websocket.receive_json()
@@ -212,6 +221,7 @@ async def tts_stream_ws(websocket: WebSocket):
 
             voice = data.get("voice", "female")
             segment_id = data.get("segment_id", "no_segment_id")
+            speed = data.get("speed", 1.4)  # Default to server speed
             
             out_format = str(data.get("format", "pcm")).lower()
 
@@ -230,35 +240,80 @@ async def tts_stream_ws(websocket: WebSocket):
                     await websocket.send_bytes(b"\0" * int(os.getenv("PRIME_BYTES", "512")))
 
             if input_text:
-                logger.info(f"WebSocket: Generating audio for input: '{input_text[:50]}...' (length: {len(input_text)})")
+                logger.info(f"WebSocket: Generating audio for input: '{input_text[:50]}...' (length: {len(input_text)}) speed={speed}")
+                
+                # Set per-request speed override
+                if speed is not None:
+                    os.environ["KOKORO_SPEED"] = str(max(0.5, min(2.0, float(speed))))
+                
                 audio_generator = engine.generate_speech_async(
                     prompt=input_text,
                     voice=voice,
                     output_format=out_format,
                 )
 
+                # WS send controls
+                BUF_TARGET = int(os.getenv("WS_BUFFER_BYTES", "8192"))       # ~0.17s @ 24kHz mono PCM16
+                FLUSH_EVERY = int(os.getenv("WS_FLUSH_EVERY", "5"))          # or flush every N micro-chunks
+                SEND_TIMEOUT = float(os.getenv("WS_SEND_TIMEOUT", "3.0"))    # hard cap per send
+                LONG_SEND_LOG_MS = float(os.getenv("WS_LONG_SEND_LOG_MS", "250.0"))
+
+                buf = bytearray()
+                chunks_since_flush = 0
                 first_chunk = True
+                segment_index = 0
+                total_samples = 0
+
+                async def _flush():
+                    nonlocal buf, chunks_since_flush, segment_index, total_samples, first_chunk
+                    if not buf:
+                        return
+                    send_t0 = time.perf_counter()
+                    try:
+                        await asyncio.wait_for(websocket.send_bytes(bytes(buf)), timeout=SEND_TIMEOUT)
+                    except asyncio.TimeoutError:
+                        logger.error("WebSocket: send_bytes timeout after %.2fs (buffer=%d bytes)", SEND_TIMEOUT, len(buf))
+                        raise
+                    finally:
+                        send_ms = (time.perf_counter() - send_t0) * 1000.0
+                        if send_ms > LONG_SEND_LOG_MS:
+                            logger.warning("WebSocket: slow send_bytes: %.1f ms (buffer=%d bytes)", send_ms, len(buf))
+
+                    # First-chunk TTFB measured on first successful send
+                    if first_chunk:
+                        ttfb = time.perf_counter() - start_time
+                        logger.info("WebSocket: Time to first audio chunk (TTFB): %.2f ms", ttfb * 1000.0)
+                        first_chunk = False
+
+                    total_samples += len(buf) // 2  # 2 bytes/sample (PCM16 mono)
+                    buf.clear()
+                    chunks_since_flush = 0
+
+                    # Lightweight progress message (every ~10 flushes by default)
+                    if (segment_index % 10) == 0:
+                        with contextlib.suppress(Exception):
+                            await websocket.send_json({
+                                "type": "meta",
+                                "segment": segment_index,
+                                "total_samples": total_samples,
+                            })
+                    segment_index += 1
+
                 try:
                     async for chunk in audio_generator:
-                        if first_chunk:
-                            ttfb = time.perf_counter() - start_time
-                            logger.info(f"WebSocket: Time to first audio chunk (TTFB): {ttfb*1000:.2f} ms")
-                            first_chunk = False
-                        try:
-                            await websocket.send_bytes(chunk)
-                        except Exception:
-                            break
-                        total_samples += len(chunk) // 2
-                        if (segment_index % 10) == 0:
-                            with contextlib.suppress(Exception):
-                                await websocket.send_json({
-                                    "type": "meta",
-                                    "segment": segment_index,
-                                    "total_samples": total_samples,
-                                })
-                        segment_index += 1
+                        buf.extend(chunk)
+                        chunks_since_flush += 1
+
+                        # Flush on size or cadence
+                        if len(buf) >= BUF_TARGET or chunks_since_flush >= FLUSH_EVERY:
+                            await _flush()
+
+                    # Final flush
+                    if buf:
+                        await _flush()
+
                 except Exception as e:
-                    logger.exception(f"WebSocket: Error during audio generation: {str(e)}")
+                    logger.exception("WebSocket: Error during audio generation/sending: %s", str(e))
                     break
             else:
                 logger.info("WebSocket: Empty or whitespace-only input received, skipping audio generation.")
