@@ -34,18 +34,19 @@ echo "Starting Kokoro TTS API server on $HOST:$PORT..."
 echo "Model: $MODEL_NAME (quantization: $QUANTIZATION)"
 echo "Log level: $LOG_LEVEL"
 echo "Kokoro voices: female=${DEFAULT_VOICE_FEMALE:-aoede}, male=${DEFAULT_VOICE_MALE:-michael}"
-echo "Speed: ${KOKORO_SPEED:-1.0} | Split: ${KOKORO_SPLIT_PATTERN:-\\n+} | Chunk: ${STREAM_CHUNK_SECONDS:-0.5}s"
+echo "Speed: ${KOKORO_SPEED:-1.0} | Split: ${KOKORO_SPLIT_PATTERN:-\\n+} | Chunk: ${STREAM_CHUNK_SECONDS:-0.05}s"
 
-# Force priming and smaller initial chunks for proxy friendliness unless overridden
-export PRIME_STREAM=${PRIME_STREAM:-1}
-export STREAM_CHUNK_SECONDS=${STREAM_CHUNK_SECONDS:-0.1}
+# Disable priming by default and use small chunks for fast real audio
+export PRIME_STREAM=${PRIME_STREAM:-0}
+export STREAM_CHUNK_SECONDS=${STREAM_CHUNK_SECONDS:-0.05}
 echo "Priming: $PRIME_STREAM | Stream chunk seconds: $STREAM_CHUNK_SECONDS"
 
 # TTFB tuning defaults (overridable)
-export FIRST_SEGMENT_MAX_WORDS=${FIRST_SEGMENT_MAX_WORDS:-6}
+export FIRST_SEGMENT_MAX_WORDS=${FIRST_SEGMENT_MAX_WORDS:-3}
 export FIRST_SEGMENT_BOUNDARIES=${FIRST_SEGMENT_BOUNDARIES:-".,?!;:"}
-export MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-12}
-export QUEUE_MAXSIZE=${QUEUE_MAXSIZE:-256}
+# Conservative defaults to avoid model/library deadlocks under load
+export MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-1}
+export QUEUE_MAXSIZE=${QUEUE_MAXSIZE:-64}
 export PRIME_BYTES=${PRIME_BYTES:-512}
 echo "First segment max words: $FIRST_SEGMENT_MAX_WORDS | boundaries: $FIRST_SEGMENT_BOUNDARIES"
 echo "Concurrency: $MAX_CONCURRENT_JOBS | Queue size: $QUEUE_MAXSIZE"
