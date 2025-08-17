@@ -43,8 +43,8 @@ DEFAULT_VOICE_FEMALE=af_aoede
 DEFAULT_VOICE_MALE=am_michael
 LANG_CODE=a
 KOKORO_SPEED=1.0
-STREAM_CHUNK_SECONDS=0.1
-FIRST_SEGMENT_MAX_WORDS=5
+STREAM_CHUNK_SECONDS=0.05
+FIRST_SEGMENT_MAX_WORDS=3
 FIRST_SEGMENT_BOUNDARIES=.,?!;:
 
 # Context parameters (not used by Kokoro, kept for API compat logging)
@@ -60,14 +60,14 @@ HF_HOME=
 HF_TOKEN=
 
 # Stream priming to defeat proxy buffering (0=off, 1=on)
-PRIME_STREAM=1
+PRIME_STREAM=0
 PRIME_BYTES=512
  
 # Optional CUDA/throughput knobs
 KOKORO_DEVICE=cuda:0
 KOKORO_GPU_MEMORY_FRACTION=0.95
-MAX_CONCURRENT_JOBS=8
-QUEUE_MAXSIZE=256
+MAX_CONCURRENT_JOBS=1
+QUEUE_MAXSIZE=64
 EOL
 
 echo "Setup complete! You can now run scripts/start.sh to launch the API server."
