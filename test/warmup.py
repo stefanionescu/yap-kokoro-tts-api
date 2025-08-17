@@ -45,14 +45,12 @@ def _format_metrics(tag: str, m: dict):
         f"throughput={m['kb_per_s']:.1f} KB/s"
     )
 
-
-
 async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool):
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
     seg_id = f"seg-{uuid.uuid4().hex[:8]}"
     t_first = None
     total = 0
-    t0 = time.time()
+    t0 = None
     audio_buf = bytearray() if save_audio else None
     
     async with websockets.connect(ws_url, max_size=None, compression=None, ping_interval=20, ping_timeout=20) as ws:
@@ -63,6 +61,7 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
             "voice": voice,
             "format": "pcm"
         }))
+        t0 = time.time()
 
         # Receive until we get an end message
         while True:
@@ -116,7 +115,23 @@ def warmup_api(host="localhost", port=8000, save_audio=False):
         return False
 
     # Warmup requests for each voice: WebSocket only
-    test_text = "This is a warmup request to optimize the text-to-speech model performance."
+    test_text = (
+        "The origin of humankind is a fascinating topic with deep roots in our "
+        "evolutionary history. Our species, Homo sapiens, emerged in Africa "
+        "around 300,000 years ago. Fossil evidence suggests we evolved from "
+        "earlier hominid species like Homo erectus and Australopithecus afarensis "
+        "through a process of natural selection and adaptation to changing "
+        "environments. Genetic studies have traced our ancestry back to a small "
+        "population that migrated out of Africa around 70,000 years ago, "
+        "eventually populating the entire globe. Over time, different human "
+        "populations diverged and developed unique traits due to geographic "
+        "isolation and varying environmental pressures. The story of human origins "
+        "is still being pieced together through ongoing archaeological discoveries "
+        "and advancements in genetic research. However, the prevailing scientific "
+        "consensus points to a single African origin for all modern humans, with "
+        "our species' remarkable journey spanning hundreds of thousands of years "
+        "and continents."
+    )
 
     for voice in ["female", "male"]:
         logger.info(f"[WS] {voice}: starting…")

@@ -3,14 +3,15 @@
 Simple load/latency benchmark for Kokoro TTS WebSocket API.
 
 Measures TTFB, wall time, audio seconds, RTF, xRT and throughput for a given
-number of requests, split evenly across voices (female/male), with configurable
-concurrency using WebSocket protocol only.
+number of requests, split evenly across voices (female/male), using a SINGLE
+reused WebSocket connection for all requests.
 
 Examples (run on pod):
   python test/bench.py --n 40 --concurrency 12
   python test/bench.py --n 100 --concurrency 8 --host your-host
 
 Host/port default to localhost:8000; override with --host/--port.
+Concurrency parameter now controls request rate (lower = slower rate).
 """
 import argparse
 import asyncio
@@ -64,37 +65,36 @@ def _metrics(total_bytes: int, t0: float, t_first: float, t_end: float) -> Dict[
         "bytes": float(total_bytes),
     }
 
-
-
-
-
-async def _ws_one(base_url: str, text: str, voice: str) -> Dict[str, float]:
-    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
+async def _ws_one_on_connection(ws, text: str, voice: str) -> Dict[str, float]:
+    """Send one request through an existing WebSocket connection."""
     seg_id = f"seg-{uuid.uuid4().hex[:8]}"
-    t0 = time.time()
+    t0 = None
     total = 0
     t_first = None
-    async with websockets.connect(ws_url, max_size=None, compression=None) as ws:
-        await ws.send(json.dumps({
-            "continue": True,
-            "segment_id": seg_id,
-            "input": text,
-            "voice": voice,
-            "format": "pcm",
-        }))
-        while True:
-            msg = await ws.recv()
-            if isinstance(msg, (bytes, bytearray)):
-                if t_first is None:
-                    t_first = time.time()
-                total += len(msg)
-            else:
-                try:
-                    data = json.loads(msg)
-                except Exception:
-                    continue
-                if isinstance(data, dict) and data.get("type") == "end":
-                    break
+    
+    await ws.send(json.dumps({
+        "continue": True,
+        "segment_id": seg_id,
+        "input": text,
+        "voice": voice,
+        "format": "pcm",
+    }))
+    t0 = time.time()
+    
+    while True:
+        msg = await ws.recv()
+        if isinstance(msg, (bytes, bytearray)):
+            if t_first is None:
+                t_first = time.time()
+            total += len(msg)
+        else:
+            try:
+                data = json.loads(msg)
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("type") == "end":
+                break
+    
     t_end = time.time()
     return _metrics(total, t0, t_first or t_end, t_end)
 
@@ -122,28 +122,37 @@ def summarize(title: str, results: List[Dict[str, float]]) -> None:
 
 
 async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int) -> List[Dict[str, float]]:
-    sem = asyncio.Semaphore(concurrency)
+    """Run benchmark using a single reused WebSocket connection."""
+    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
     results: List[Dict[str, float]] = []
     errors: List[str] = []
 
-    async def run_one(i: int) -> None:
-        voice = "female" if (i % 2 == 0) else "male"
-        async with sem:
-            try:
-                r = await _ws_one(base_url, text, voice)
-                results.append(r)
-            except Exception as e:
-                errors.append(str(e))
-
-    tasks = [asyncio.create_task(run_one(i)) for i in range(total_reqs)]
-    await asyncio.gather(*tasks)
+    try:
+        async with websockets.connect(ws_url, max_size=None, compression=None) as ws:
+            print(f"Connected to {ws_url} - reusing connection for all {total_reqs} requests")
+            
+            for i in range(total_reqs):
+                voice = "female" if (i % 2 == 0) else "male"
+                try:
+                    r = await _ws_one_on_connection(ws, text, voice)
+                    results.append(r)
+                    if (i + 1) % 10 == 0:
+                        print(f"  Completed {i + 1}/{total_reqs} requests...")
+                except Exception as e:
+                    errors.append(f"Request {i}: {str(e)}")
+                
+                # Small delay between requests if concurrency < total_reqs
+                # This simulates controlled request rate
+                if concurrency < total_reqs and i < total_reqs - 1:
+                    delay = 0.1  # 100ms between requests
+                    await asyncio.sleep(delay)
+    
+    except Exception as e:
+        errors.append(f"Connection error: {str(e)}")
+    
     if errors:
         print(f"WS errors: {len(errors)} (showing first 3): {errors[:3]}")
     return results
-
-
-
-
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -151,12 +160,12 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=8000)
     ap.add_argument("--proto", choices=["ws"], default="ws")
     ap.add_argument("--n", type=int, default=40, help="total requests")
-    ap.add_argument("--concurrency", type=int, default=12)
+    ap.add_argument("--concurrency", type=int, default=12, help="request rate control (lower = slower rate)")
     ap.add_argument("--text", default=DEFAULT_TEXT)
     args = ap.parse_args()
 
     base_url = f"http://{args.host}:{args.port}"
-    print(f"Benchmark → WebSocket | n={args.n} | conc={args.concurrency} | host={args.host}:{args.port}")
+    print(f"Benchmark → WebSocket (single reused connection) | n={args.n} | rate_control={args.concurrency} | host={args.host}:{args.port}")
 
     t0 = time.time()
     ws_res = asyncio.run(bench_ws(base_url, args.text, args.n, args.concurrency))
