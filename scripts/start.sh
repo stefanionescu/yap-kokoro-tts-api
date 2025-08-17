@@ -45,7 +45,7 @@ echo "Priming: $PRIME_STREAM | Stream chunk seconds: $STREAM_CHUNK_SECONDS"
 export FIRST_SEGMENT_MAX_WORDS=${FIRST_SEGMENT_MAX_WORDS:-3}
 export FIRST_SEGMENT_BOUNDARIES=${FIRST_SEGMENT_BOUNDARIES:-".,?!;:"}
 # Conservative defaults to avoid model/library deadlocks under load
-export MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-8}
+export MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-12}
 export QUEUE_MAXSIZE=${QUEUE_MAXSIZE:-128}
 export PRIME_BYTES=${PRIME_BYTES:-512}
 echo "First segment max words: $FIRST_SEGMENT_MAX_WORDS | boundaries: $FIRST_SEGMENT_BOUNDARIES"

@@ -117,15 +117,15 @@ class KokoroEngine:
         queue_size = int(os.getenv("QUEUE_MAXSIZE", "128"))
         self._pri_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
         self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
-        self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "8"))
+        self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "12"))
         self._worker_tasks: list[asyncio.Task] = []
         
         # Round-robin scheduling parameters
-        self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", "16384")))  # ~0.34s @ 24k PCM16
+        self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", "4096")))
         self.active_limit = self.max_concurrent
         
         # Admission control
-        self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", "1000"))
+        self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", "800"))
 
         # Extend available voices with custom names
         self._refresh_available_voices()
