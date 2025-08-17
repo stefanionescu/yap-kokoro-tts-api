@@ -58,13 +58,13 @@ python test/bench.py --proto ws --n 60 --concurrency 12
 
 ### Config knobs (sane defaults set by start.sh)
 - TTFB/streaming
-  - `FIRST_SEGMENT_MAX_WORDS` (default 6)
+  - `FIRST_SEGMENT_MAX_WORDS` (default 3)
   - `FIRST_SEGMENT_BOUNDARIES` (default `.,?!;:`)
-  - `STREAM_CHUNK_SECONDS` (default 0.1)
+  - `STREAM_CHUNK_SECONDS` (default 0.02)
   - `PRIME_STREAM=1`, `PRIME_BYTES=512`
 - Concurrency/backpressure
-  - `MAX_CONCURRENT_JOBS` (default 12)
-  - `QUEUE_MAXSIZE` (default 256) – excess requests block in queue
+  - `MAX_CONCURRENT_JOBS` (default 8)
+  - `QUEUE_MAXSIZE` (default 128) – excess requests block in queue
 - GPU
   - `KOKORO_DEVICE` (e.g., `cuda:0`)
   - `KOKORO_GPU_MEMORY_FRACTION` (e.g., `0.95`) – soft cap; use MIG for hard isolation

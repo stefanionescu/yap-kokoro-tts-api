@@ -86,10 +86,10 @@ class KokoroEngine:
         self.split_pattern = os.getenv("KOKORO_SPLIT_PATTERN", r"\n+")
         # Stream chunking in samples (defaults to 0.1s)
         self.stream_chunk_samples = int(
-            float(os.getenv("STREAM_CHUNK_SECONDS", "0.10")) * SAMPLE_RATE
+            float(os.getenv("STREAM_CHUNK_SECONDS", "0.02")) * SAMPLE_RATE
         )
         # Fast-TTFB first-segment control
-        self.first_segment_max_words = int(os.getenv("FIRST_SEGMENT_MAX_WORDS", "6"))
+        self.first_segment_max_words = int(os.getenv("FIRST_SEGMENT_MAX_WORDS", "3"))
         self.first_segment_boundary_chars = os.getenv("FIRST_SEGMENT_BOUNDARIES", ".?!,;:-—")
 
         logger.info(
@@ -114,10 +114,10 @@ class KokoroEngine:
         # (memory cap already applied above before model init)
 
         # Async job queues and worker pool
-        queue_size = int(os.getenv("QUEUE_MAXSIZE", "32"))
+        queue_size = int(os.getenv("QUEUE_MAXSIZE", "128"))
         self._pri_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
         self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
-        self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "1"))
+        self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "8"))
         self._worker_tasks: list[asyncio.Task] = []
         
         # Round-robin scheduling parameters
@@ -125,7 +125,7 @@ class KokoroEngine:
         self.active_limit = self.max_concurrent
         
         # Admission control
-        self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", "250"))
+        self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", "1000"))
 
         # Extend available voices with custom names
         self._refresh_available_voices()

@@ -68,9 +68,12 @@ def _metrics(total_bytes: int, t0: float, t_first: float, t_end: float) -> Dict[
 async def _ws_one_on_connection(ws, text: str, voice: str) -> Dict[str, float]:
     """Send one request through an existing WebSocket connection."""
     seg_id = f"seg-{uuid.uuid4().hex[:8]}"
+    t_send = time.time()
     t0 = None
     total = 0
     t_first = None
+    audio_chunks = 0
+    meta_messages = 0
     
     await ws.send(json.dumps({
         "continue": True,
@@ -79,23 +82,37 @@ async def _ws_one_on_connection(ws, text: str, voice: str) -> Dict[str, float]:
         "voice": voice,
         "format": "pcm",
     }))
-    t0 = time.time()
+    t0 = time.time()  # Start timing after send completes
     
     while True:
         msg = await ws.recv()
         if isinstance(msg, (bytes, bytearray)):
             if t_first is None:
                 t_first = time.time()
+                print(f"    First audio chunk after {(t_first - t0) * 1000:.0f}ms")
             total += len(msg)
+            audio_chunks += 1
         else:
             try:
                 data = json.loads(msg)
             except Exception:
                 continue
-            if isinstance(data, dict) and data.get("type") == "end":
-                break
+            
+            if isinstance(data, dict):
+                msg_type = data.get("type")
+                if msg_type == "start":
+                    print(f"    Received 'start' message after {(time.time() - t0) * 1000:.0f}ms")
+                elif msg_type == "meta":
+                    meta_messages += 1
+                elif msg_type == "end":
+                    print(f"    Received 'end' message after {(time.time() - t0) * 1000:.0f}ms")
+                    print(f"    Total: {audio_chunks} audio chunks, {meta_messages} meta messages")
+                    break
     
     t_end = time.time()
+    send_to_end = (t_end - t_send) * 1000  # Total time from send to end
+    print(f"    Full request time (send→end): {send_to_end:.0f}ms")
+    
     return _metrics(total, t0, t_first or t_end, t_end)
 
 
@@ -133,11 +150,11 @@ async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int) 
             
             for i in range(total_reqs):
                 voice = "female" if (i % 2 == 0) else "male"
+                print(f"\n  Request {i + 1}/{total_reqs} (voice={voice}, text_len={len(text)} chars)")
                 try:
                     r = await _ws_one_on_connection(ws, text, voice)
                     results.append(r)
-                    if (i + 1) % 10 == 0:
-                        print(f"  Completed {i + 1}/{total_reqs} requests...")
+                    print(f"    Result: TTFB={r['ttfb_ms']:.0f}ms, Wall={r['wall_s']:.2f}s, Audio={r['audio_s']:.1f}s, xRT={r['xrt']:.1f}x")
                 except Exception as e:
                     errors.append(f"Request {i}: {str(e)}")
                 
@@ -166,6 +183,9 @@ def main() -> None:
 
     base_url = f"http://{args.host}:{args.port}"
     print(f"Benchmark → WebSocket (single reused connection) | n={args.n} | rate_control={args.concurrency} | host={args.host}:{args.port}")
+    print(f"Text length: {len(args.text)} characters")
+    print(f"Text preview: {args.text[:100]}...")
+    print(f"Expected audio duration: ~{len(args.text.split()) * 0.6:.1f} seconds (rough estimate)")
 
     t0 = time.time()
     ws_res = asyncio.run(bench_ws(base_url, args.text, args.n, args.concurrency))
