@@ -1,4 +1,5 @@
 import asyncio
+from asyncio import QueueEmpty
 import logging
 import os
 import contextlib
@@ -81,9 +82,9 @@ class KokoroEngine:
         # Streaming/chunking behavior
         self.speed = float(os.getenv("KOKORO_SPEED", "1.0"))
         self.split_pattern = os.getenv("KOKORO_SPLIT_PATTERN", r"\n+")
-        # Stream chunking in samples (defaults to 0.1s)
+        # Stream chunking in samples
         self.stream_chunk_samples = int(
-            float(os.getenv("STREAM_CHUNK_SECONDS", "0.02")) * SAMPLE_RATE
+            float(os.getenv("STREAM_CHUNK_SECONDS", "0.04")) * SAMPLE_RATE
         )
         # Fast-TTFB first-segment control
         self.first_segment_max_words = int(os.getenv("FIRST_SEGMENT_MAX_WORDS", "2"))
@@ -124,7 +125,7 @@ class KokoroEngine:
         self._ewma_wall_ms: float = float(os.getenv("AVG_JOB_WALL_MS", "2500"))
         
         # Round-robin scheduling parameters
-        self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", "4096")))
+        self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", "16384")))
         self.active_limit = self.max_concurrent
         
         # Admission control
@@ -211,17 +212,18 @@ class KokoroEngine:
             return (job, agen)
 
         while True:
-            # Fill active set up to limit
-            while len(active) < self.active_limit:
-                # pull priority if available else normal; don't starve
-                if not self._pri_queue.empty():
-                    job = await self._pri_queue.get()
+            # Fill active set up to the effective number of inflight streams to avoid blocking under partial load
+            effective_limit = min(self.active_limit, max(1, self._inflight_count))
+            while len(active) < effective_limit:
+                try:
+                    # Priority first
+                    job = self._pri_queue.get_nowait()
                     self._pri_queue.task_done()
-                else:
+                except QueueEmpty:
                     try:
-                        job = await asyncio.wait_for(self._job_queue.get(), timeout=0.005)
+                        job = self._job_queue.get_nowait()
                         self._job_queue.task_done()
-                    except asyncio.TimeoutError:
+                    except QueueEmpty:
                         break
                 active.append(await start_from_job(job))
 
@@ -233,7 +235,7 @@ class KokoroEngine:
             # Round-robin one quantum
             job, agen = active.popleft()
             sent = 0
-            prio_q = int(float(os.getenv("PRIORITY_QUANTUM_BYTES", "1024")))
+            prio_q = int(float(os.getenv("PRIORITY_QUANTUM_BYTES", "2048")))
             budget = prio_q if getattr(job, "priority", False) else self.quantum_bytes
             try:
                 while sent < budget:

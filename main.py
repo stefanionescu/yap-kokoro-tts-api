@@ -112,8 +112,8 @@ async def tts_stream_ws(websocket: WebSocket):
         chunks_since_flush = 0
 
         # WS send controls (align with setup.sh defaults)
-        BUF_TARGET = int(os.getenv("WS_BUFFER_BYTES", "960"))
-        FLUSH_EVERY = int(os.getenv("WS_FLUSH_EVERY", "1"))
+        BUF_TARGET = int(os.getenv("WS_BUFFER_BYTES", "16384"))
+        FLUSH_EVERY = int(os.getenv("WS_FLUSH_EVERY", "16"))
         SEND_TIMEOUT = float(os.getenv("WS_SEND_TIMEOUT", "3.0"))
         LONG_SEND_LOG_MS = float(os.getenv("WS_LONG_SEND_LOG_MS", "250.0"))
 

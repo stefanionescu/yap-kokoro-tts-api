@@ -2,7 +2,7 @@
 
 FastAPI service around Kokoro‑82M with a persistent WebSocket protocol designed for low‑latency sentence‑level streaming and barge‑in. Output is 24 kHz mono PCM16.
 
-All parameters and tests were used and run on L40S GPUs.
+All parameters were optimized for an L40S.
 
 ### Run
 ```bash
