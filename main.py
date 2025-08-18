@@ -195,6 +195,9 @@ async def tts_stream_ws(websocket: WebSocket):
                     "kbps": kbps,
                     "canceled": False,
                 })
+                # Feed wall time into engine EWMA (ms) to improve admission estimation under load
+                with contextlib.suppress(Exception):
+                    engine.record_job_wall_ms(wall_s * 1000.0)
                 await send_json_safe({
                     "type": "done",
                     "request_id": req_id,

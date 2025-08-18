@@ -15,12 +15,9 @@ import numpy as np
 from kokoro import KPipeline
 import torch
 
-
 logger = logging.getLogger(__name__)
 
-
 SAMPLE_RATE = 24000  # Kokoro outputs 24 kHz
-
 
 def _float_to_pcm16_bytes(audio: np.ndarray) -> bytes:
     if audio is None or audio.size == 0:
@@ -124,6 +121,8 @@ class KokoroEngine:
         self._inflight_count: int = 0
         # Total accepted requests (running + queued/reserved at API)
         self._accepted_slots: int = 0
+        # EWMA of observed job wall time (ms) used for SLA estimation
+        self._ewma_wall_ms: float = float(os.getenv("AVG_JOB_WALL_MS", "2500"))
         
         # Round-robin scheduling parameters
         self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", "4096")))
@@ -415,7 +414,8 @@ class KokoroEngine:
             return False
         # Estimate queued count including reserved but not yet enqueued
         queued_est = max(0, self._accepted_slots - self._inflight_count) + self._pri_queue.qsize() + self._job_queue.qsize()
-        est_wait_ms = (queued_est / max(1, self.active_limit)) * (1000.0 * self.stream_chunk_samples / float(SAMPLE_RATE))
+        # Predict wait using EWMA of full job wall time per slot, not chunk time
+        est_wait_ms = (queued_est / max(1, self.active_limit)) * max(1.0, self._ewma_wall_ms)
         if est_wait_ms >= self.queue_wait_sla_ms:
             return False
         self._accepted_slots += 1
@@ -423,6 +423,14 @@ class KokoroEngine:
 
     def release_accept_slot(self) -> None:
         self._accepted_slots = max(0, self._accepted_slots - 1)
+
+    def record_job_wall_ms(self, wall_ms: float) -> None:
+        """Update EWMA for job wall time used in SLA estimation."""
+        try:
+            alpha = 0.2
+            self._ewma_wall_ms = (1 - alpha) * self._ewma_wall_ms + alpha * max(1.0, float(wall_ms))
+        except Exception:
+            pass
 
     def try_reserve_slot(self) -> bool:
         """Atomically reserve a concurrency slot if available.
