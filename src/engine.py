@@ -478,16 +478,17 @@ class KokoroEngine:
         boundary_chars = set(self.first_segment_boundary_chars)
         cut_idx = 0
         acc_words = []
+        require_boundary = os.getenv("FIRST_SEGMENT_REQUIRE_BOUNDARY", "1") == "1"
         for i, w in enumerate(words):
             acc_words.append(w)
             if i + 1 >= n and any(ch in boundary_chars for ch in w):
                 cut_idx = i + 1
                 break
-            if i + 1 >= n + 4:
+            # Only allow no-boundary fallback when not requiring boundary
+            if not require_boundary and (i + 1 >= n + 4):
                 cut_idx = i + 1
                 break
         # If no natural boundary found and require-boundary is enabled, do NOT split
-        require_boundary = os.getenv("FIRST_SEGMENT_REQUIRE_BOUNDARY", "1") == "1"
         if cut_idx == 0:
             if require_boundary:
                 return [t]
