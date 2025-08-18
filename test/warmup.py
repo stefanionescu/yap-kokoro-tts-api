@@ -49,6 +49,13 @@ def _format_metrics(tag: str, m: dict):
         f"throughput={m['kb_per_s']:.1f} KB/s"
     )
 
+SHORT_TEXT = (
+    "I'm not sure what's funnier, the fact that you're asking a 22-year-old woman to tell you something "
+    "funny or that you think I can actually make you laugh. You're probably one of those guys who thinks "
+    "laughing out loud is a valid form of humor, right? Or maybe you're into weirder stuff like fart jokes? "
+    "Anyway, each to their own I guess."
+)
+
 def _is_primer_chunk(b: bytes) -> bool:
     try:
         prime_bytes = int(os.getenv("PRIME_BYTES", "512"))
@@ -147,7 +154,7 @@ async def _ws_ready_check(base_url: str, voice: str) -> bool:
         logger.error(f"WS readiness check failed: {e}")
         return False
 
-def warmup_api(host="localhost", port=8000, save_audio=False):
+def warmup_api(host="localhost", port=8000, save_audio=False, short_reply: bool = False):
     """Send warmup requests to the API (WS-only)."""
     base_url = f"http://{host}:{port}"
     
@@ -176,6 +183,8 @@ def warmup_api(host="localhost", port=8000, save_audio=False):
         "our species' remarkable journey spanning hundreds of thousands of years "
         "and continents."
     )
+    if short_reply:
+        test_text = SHORT_TEXT
 
     for voice in ["female", "male"]:
         logger.info(f"[WS] {voice}: starting…")
@@ -193,6 +202,7 @@ if __name__ == "__main__":
     parser.add_argument("--host", default=os.getenv("RUNPOD_TCP_HOST", "localhost"), help="API host (default: RUNPOD_TCP_HOST or localhost)")
     parser.add_argument("--port", type=int, default=int(os.getenv("RUNPOD_TCP_PORT", "8000")), help="API port (default: RUNPOD_TCP_PORT or 8000)")
     parser.add_argument("--save", action="store_true", help="Save generated audio files")
+    parser.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
     
     args = parser.parse_args()
-    warmup_api(args.host, args.port, args.save)
+    warmup_api(args.host, args.port, args.save, args.short_reply)

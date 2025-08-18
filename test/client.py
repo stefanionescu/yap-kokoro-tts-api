@@ -57,6 +57,13 @@ DEFAULT_TEXT = (
     "and continents."
 )
 
+SHORT_TEXT = (
+    "I'm not sure what's funnier, the fact that you're asking a 22-year-old woman to tell you something "
+    "funny or that you think I can actually make you laugh. You're probably one of those guys who thinks "
+    "laughing out loud is a valid form of humor, right? Or maybe you're into weirder stuff like fart jokes? "
+    "Anyway, each to their own I guess."
+)
+
 def _is_primer_chunk(b: bytes) -> bool:
     try:
         prime_bytes = int(os.getenv("PRIME_BYTES", "512"))
@@ -222,6 +229,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--voice", choices=["female", "male"], default="female", help="Voice to use")
     parser.add_argument("--text", default=DEFAULT_TEXT, help="Input text to synthesize")
+    parser.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
     parser.add_argument("--out", default="hello.wav", help="Output file path (wav/ogg/mp3/pcm)")
     parser.add_argument("--format", choices=["wav", "ogg", "opus", "mp3", "pcm"], default="wav", help="Output format")
     parser.add_argument("--speed", type=float, default=1.0, help="Speech speed multiplier (0.5-2.0, default: 1.0)")
@@ -234,7 +242,8 @@ def main() -> None:
         # Determine TLS pref: explicit flag, scheme in host, or RunPod proxy host
         norm_host, tls_from_scheme = _sanitize_host_and_scheme(args.host)
         tls_pref = args.tls or tls_from_scheme or _is_runpod_proxy_host(norm_host)
-        rc = asyncio.run(stream_ws_and_save(norm_host, args.port, args.voice, args.text, args.out, args.format, tls_pref, args.speed))
+        text_to_use = SHORT_TEXT if args.short_reply else args.text
+        rc = asyncio.run(stream_ws_and_save(norm_host, args.port, args.voice, text_to_use, args.out, args.format, tls_pref, args.speed))
         if rc != 0:
             sys.exit(rc)
     except KeyboardInterrupt:

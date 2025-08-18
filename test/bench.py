@@ -46,6 +46,14 @@ DEFAULT_TEXT = (
     "and continents."
 )
 
+# Optional short reply text
+SHORT_TEXT = (
+    "I'm not sure what's funnier, the fact that you're asking a 22-year-old woman to tell you something "
+    "funny or that you think I can actually make you laugh. You're probably one of those guys who thinks "
+    "laughing out loud is a valid form of humor, right? Or maybe you're into weirder stuff like fart jokes? "
+    "Anyway, each to their own I guess."
+)
+
 def _metrics(total_bytes: int, t0: float, t_first: float, t_end: float) -> Dict[str, float]:
     ttfb_ms = (t_first - t0) * 1000.0
     wall_s = t_end - t0
@@ -93,12 +101,16 @@ def _is_primer_chunk(b: bytes) -> bool:
     return len(b) <= prime_bytes and not any(b)
 
 
-async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int) -> List[Dict[str, float]]:
-    """Open one WS and send multiple speak() calls sequentially to simulate Pipecat."""
+async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int) -> dict:
+    """Open one WS and send multiple speak() calls sequentially to simulate Pipecat.
+
+    Returns {"results": List[metrics], "rejected": int}
+    """
     api_key = os.getenv("API_KEY", "")
     qs = f"?api_key={api_key}" if api_key else ""
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws" + qs
     results: List[Dict[str, float]] = []
+    rejected = 0
     async with websockets.connect(ws_url, max_size=None, compression=None) as ws:
         await ws.send(json.dumps({
             "type": "start",
@@ -124,6 +136,7 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
             t0 = None
             t_first = None
             total = 0
+            was_rejected = False
             # emit speak
             await ws.send(json.dumps({
                 "type": "speak",
@@ -147,13 +160,26 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
                     data = json.loads(msg)
                 except Exception:
                     continue
+                if isinstance(data, dict) and data.get("type") == "error" and data.get("request_id") == request_id:
+                    code = data.get("code")
+                    if code == "busy":
+                        print(f"    Worker {worker_id}: Request {request_id} rejected (busy)")
+                        rejected += 1
+                        was_rejected = True
+                        break
+                    else:
+                        print(f"    Worker {worker_id}: Request {request_id} error: {code}")
+                        was_rejected = True
+                        break
                 if isinstance(data, dict) and data.get("type") in ("done", "canceled") and data.get("request_id") == request_id:
                     break
+            if was_rejected:
+                continue
             t_end = time.time()
             results.append(_metrics(total, t0 or t_end, t_first or t_end, t_end))
         # send stop
         await ws.send(json.dumps({"type":"stop"}))
-    return results
+    return {"results": results, "rejected": rejected}
 
 def _split_counts(total: int, workers: int) -> List[int]:
     base = total // workers
@@ -161,39 +187,47 @@ def _split_counts(total: int, workers: int) -> List[int]:
     return [base + (1 if i < rem else 0) for i in range(workers)]
 
 
-async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int) -> List[Dict[str, float]]:
-    """Run benchmark using persistent WS per worker; multiple speak() per connection."""
+async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int):
+    """Run benchmark using persistent WS per worker; multiple speak() per connection.
+
+    Returns (results: List[metrics], rejected_count: int)
+    """
     workers = min(concurrency, total_reqs)
     counts = _split_counts(total_reqs, workers)
     voice_cycle = ["female", "male"]
     tasks = [asyncio.create_task(_ws_worker(base_url, text, voice_cycle, counts[i], i+1)) for i in range(workers)]
     results_nested = await asyncio.gather(*tasks, return_exceptions=True)
     results: List[Dict[str, float]] = []
+    rejected_total = 0
     for r in results_nested:
-        if isinstance(r, list):
-            results.extend(r)
+        if isinstance(r, dict):
+            results.extend(r.get("results", []))
+            rejected_total += int(r.get("rejected", 0))
         else:
             print(f"Worker error: {r}")
-    return results[:total_reqs]
+    return results[:total_reqs], rejected_total
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default=os.getenv("RUNPOD_TCP_HOST", "localhost"))
     ap.add_argument("--port", type=int, default=int(os.getenv("RUNPOD_TCP_PORT", "8000")))
-    ap.add_argument("--proto", choices=["ws"], default="ws")
+    # protocol is fixed to WebSocket
     ap.add_argument("--n", type=int, default=40, help="total requests")
     ap.add_argument("--concurrency", type=int, default=12)
     ap.add_argument("--text", default=DEFAULT_TEXT)
+    ap.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
     args = ap.parse_args()
 
     base_url = f"http://{args.host}:{args.port}"
+    text_to_use = SHORT_TEXT if args.short_reply else args.text
     print(f"Benchmark → WebSocket | n={args.n} | concurrency={args.concurrency} | host={args.host}:{args.port}")
-    print(f"Text length: {len(args.text)} characters")
-    print(f"Text preview: {args.text[:100]}...")
+    print(f"Text length: {len(text_to_use)} characters")
+    print(f"Text preview: {text_to_use[:100]}...")
 
     t0 = time.time()
-    ws_res = asyncio.run(bench_ws(base_url, args.text, args.n, args.concurrency))
+    ws_res, rejected = asyncio.run(bench_ws(base_url, text_to_use, args.n, args.concurrency))
     summarize("WebSocket", ws_res)
+    print(f"Rejected: {rejected}")
     print(f"WebSocket elapsed: {time.time()-t0:.2f}s")
 
 if __name__ == "__main__":
