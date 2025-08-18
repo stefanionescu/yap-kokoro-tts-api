@@ -201,6 +201,11 @@ async def tts_stream_ws(websocket: WebSocket):
                         buf.extend(chunk)
                         chunks_since_flush += 1
 
+                        # First-chunk immediate flush to minimize TTFB
+                        if first_chunk and os.getenv("WS_FIRST_CHUNK_IMMEDIATE", "0") == "1" and len(buf) > 0:
+                            await _flush()
+                            continue
+
                         # Flush on size or cadence
                         if len(buf) >= BUF_TARGET or chunks_since_flush >= FLUSH_EVERY:
                             await _flush()

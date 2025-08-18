@@ -219,8 +219,10 @@ class KokoroEngine:
             # Round-robin one quantum
             job, agen = active.popleft()
             sent = 0
+            prio_q = int(float(os.getenv("PRIORITY_QUANTUM_BYTES", "1024")))
+            budget = prio_q if getattr(job, "priority", False) else self.quantum_bytes
             try:
-                while sent < self.quantum_bytes:
+                while sent < budget:
                     chunk = await anext(agen)
                     if not chunk:
                         continue
