@@ -394,11 +394,11 @@ class KokoroEngine:
                 proc.kill()
 
     def can_accept(self) -> bool:
-        """Check if we can accept a new request within SLA."""
+        """Check if we can accept a new request within SLA (conservative estimate)."""
         # Allow queueing up to max_queued_requests beyond active_limit
         q = self._pri_queue.qsize() + self._job_queue.qsize()
-        # Estimated start wait: queued per active slot × chunk time
-        est_wait_ms = (q / max(1, self.active_limit)) * (1000.0 * self.stream_chunk_samples / float(SAMPLE_RATE))
+        # Conservative predicted wait: add ~half a job duration for residual before the next slot frees
+        est_wait_ms = ((q / max(1, self.active_limit)) + 0.5) * max(1.0, self._ewma_wall_ms)
         within_sla = est_wait_ms < self.queue_wait_sla_ms
         within_queue_cap = q < max(0, self.max_queued_requests)
         return within_sla and within_queue_cap and (not self._job_queue.full())
@@ -419,7 +419,8 @@ class KokoroEngine:
             return True
         # Beyond active_limit → queued
         queued_est = (self._accepted_slots - self.active_limit) + self._pri_queue.qsize() + self._job_queue.qsize()
-        est_wait_ms = (queued_est / max(1, self.active_limit)) * max(1.0, self._ewma_wall_ms)
+        # Conservative wait estimate: N_per_slot + residual 0.5 job
+        est_wait_ms = ((queued_est / max(1, self.active_limit)) + 0.5) * max(1.0, self._ewma_wall_ms)
         if est_wait_ms >= self.queue_wait_sla_ms:
             return False
         self._accepted_slots += 1
