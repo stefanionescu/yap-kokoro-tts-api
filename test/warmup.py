@@ -81,8 +81,6 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
                     data = json.loads(msg)
                     if data.get("type") == "start":
                         logger.info("[WS] got start")
-                    elif data.get("type") == "meta":
-                        logger.info(f"[WS] meta: seg={data.get('segment')} samples={data.get('total_samples')}")
                     elif data.get("type") == "end":
                         break
                 except Exception:
