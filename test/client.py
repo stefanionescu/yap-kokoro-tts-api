@@ -57,6 +57,13 @@ DEFAULT_TEXT = (
     "and continents."
 )
 
+def _is_primer_chunk(b: bytes) -> bool:
+    try:
+        prime_bytes = int(os.getenv("PRIME_BYTES", "512"))
+    except Exception:
+        prime_bytes = 512
+    return len(b) <= prime_bytes and not any(b)
+
 def build_ffmpeg_cmd(output_path: str, output_format: str, speed: float = 1.4) -> list[str]:
     """Return ffmpeg command to encode from stdin s16le 24k mono to desired format."""
     base = [
@@ -167,6 +174,9 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
         while True:
             msg = await ws.recv()
             if isinstance(msg, (bytes, bytearray)):
+                # Ignore primer (all-zero) chunks for TTFB and output
+                if first and _is_primer_chunk(msg):
+                    continue
                 if first:
                     print(f"TTFB: {1000*(time.time()-t0):.0f}ms")
                     first = False

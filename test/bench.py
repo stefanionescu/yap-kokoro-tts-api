@@ -18,7 +18,7 @@ import json
 import time
 import uuid
 import statistics as stats
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 import websockets
 import os

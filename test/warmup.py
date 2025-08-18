@@ -49,6 +49,13 @@ def _format_metrics(tag: str, m: dict):
         f"throughput={m['kb_per_s']:.1f} KB/s"
     )
 
+def _is_primer_chunk(b: bytes) -> bool:
+    try:
+        prime_bytes = int(os.getenv("PRIME_BYTES", "512"))
+    except Exception:
+        prime_bytes = 512
+    return len(b) <= prime_bytes and not any(b)
+
 async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool):
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
     request_id = f"req-{uuid.uuid4().hex[:8]}"
@@ -90,6 +97,9 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
                 raise RuntimeError("WS timeout waiting for first message/chunk")
 
             if isinstance(msg, (bytes, bytearray)):
+                # Ignore primer (all-zero) chunks for TTFB and metrics
+                if t_first is None and _is_primer_chunk(msg):
+                    continue
                 if t_first is None:
                     t_first = time.time()
                 total += len(msg)
