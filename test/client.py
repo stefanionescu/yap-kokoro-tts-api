@@ -57,7 +57,6 @@ DEFAULT_TEXT = (
     "and continents."
 )
 
-
 def build_ffmpeg_cmd(output_path: str, output_format: str, speed: float = 1.4) -> list[str]:
     """Return ffmpeg command to encode from stdin s16le 24k mono to desired format."""
     base = [

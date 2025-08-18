@@ -486,7 +486,11 @@ class KokoroEngine:
             if i + 1 >= n + 4:
                 cut_idx = i + 1
                 break
+        # If no natural boundary found and require-boundary is enabled, do NOT split
+        require_boundary = os.getenv("FIRST_SEGMENT_REQUIRE_BOUNDARY", "1") == "1"
         if cut_idx == 0:
+            if require_boundary:
+                return [t]
             cut_idx = n
         first = " ".join(words[:cut_idx]).strip()
         rest = " ".join(words[cut_idx:]).strip()
