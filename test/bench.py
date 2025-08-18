@@ -85,6 +85,14 @@ def summarize(title: str, results: List[Dict[str, float]]) -> None:
     print(f"Throughput KB/s | avg={stats.mean(kbps):.0f}")
 
 
+def _is_primer_chunk(b: bytes) -> bool:
+    try:
+        prime_bytes = int(os.getenv("PRIME_BYTES", "512"))
+    except Exception:
+        prime_bytes = 512
+    return len(b) <= prime_bytes and not any(b)
+
+
 async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int) -> List[Dict[str, float]]:
     """Open one WS and send multiple speak() calls sequentially to simulate Pipecat."""
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
@@ -125,6 +133,9 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
             while True:
                 msg = await ws.recv()
                 if isinstance(msg, (bytes, bytearray)):
+                    # Ignore primer (all-zero) chunks for TTFB measurement
+                    if t_first is None and _is_primer_chunk(msg):
+                        continue
                     if t_first is None:
                         t_first = time.time()
                         print(f"    Worker {worker_id}: First chunk after {(t_first - t0) * 1000:.0f}ms")
@@ -142,12 +153,18 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
         await ws.send(json.dumps({"type":"stop"}))
     return results
 
+def _split_counts(total: int, workers: int) -> List[int]:
+    base = total // workers
+    rem = total % workers
+    return [base + (1 if i < rem else 0) for i in range(workers)]
+
+
 async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int) -> List[Dict[str, float]]:
     """Run benchmark using persistent WS per worker; multiple speak() per connection."""
-    per_worker = max(1, (total_reqs + concurrency - 1) // concurrency)
     workers = min(concurrency, total_reqs)
+    counts = _split_counts(total_reqs, workers)
     voice_cycle = ["female", "male"]
-    tasks = [asyncio.create_task(_ws_worker(base_url, text, voice_cycle, per_worker, i+1)) for i in range(workers)]
+    tasks = [asyncio.create_task(_ws_worker(base_url, text, voice_cycle, counts[i], i+1)) for i in range(workers)]
     results_nested = await asyncio.gather(*tasks, return_exceptions=True)
     results: List[Dict[str, float]] = []
     for r in results_nested:
@@ -171,7 +188,6 @@ def main() -> None:
     print(f"Benchmark → WebSocket | n={args.n} | concurrency={args.concurrency} | host={args.host}:{args.port}")
     print(f"Text length: {len(args.text)} characters")
     print(f"Text preview: {args.text[:100]}...")
-    # ~0.6s per 10 words is a rougher average than needed; let RTF report instead
 
     t0 = time.time()
     ws_res = asyncio.run(bench_ws(base_url, args.text, args.n, args.concurrency))
