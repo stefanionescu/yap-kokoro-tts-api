@@ -4,6 +4,7 @@ setup_logger()
 import time
 import os
 from src.engine import KokoroEngine
+from src.metrics import log_request_metrics
 import torch
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
@@ -50,6 +51,13 @@ app = FastAPI(lifespan=lifespan)
 
 @app.websocket("/v1/audio/speech/stream/ws")
 async def tts_stream_ws(websocket: WebSocket):
+    # Simple API key guard via query param ?api_key=
+    required_key = os.getenv("API_KEY")
+    query = dict(websocket.query_params)
+    provided = query.get("api_key")
+    if required_key and provided != required_key:
+        await websocket.close(code=1008)  # policy violation
+        return
     await websocket.accept()
     logger.info("WebSocket connection open")
 
@@ -97,6 +105,7 @@ async def tts_stream_ws(websocket: WebSocket):
         safe_speed = max(0.5, min(2.0, float(speed))) if speed is not None else None
         start_time = time.perf_counter()
         total_samples = 0
+        first_audio_at: float | None = None
         segment_index = 0
         first_chunk = True
         buf = bytearray()
@@ -127,6 +136,7 @@ async def tts_stream_ws(websocket: WebSocket):
             if first_chunk:
                 ttfb = time.perf_counter() - start_time
                 logger.info("WebSocket: TTFB %.1f ms for %s", ttfb * 1000.0, req_id)
+                first_audio_at = time.perf_counter()
                 first_chunk = False
 
             total_samples += len(buf) // 2
@@ -167,6 +177,24 @@ async def tts_stream_ws(websocket: WebSocket):
             if req_id in canceled:
                 await send_json_safe({"type": "canceled", "request_id": req_id})
             else:
+                # Compute simple per-request metrics and log via engine
+                t_end = time.perf_counter()
+                wall_s = (t_end - start_time)
+                ttfb_ms = ((first_audio_at or t_end) - start_time) * 1000.0
+                audio_s = total_samples / 24000.0
+                rtf = wall_s / audio_s if audio_s > 0 else float("inf")
+                xrt = audio_s / wall_s if wall_s > 0 else 0.0
+                kbps = (total_samples / 1024.0) / wall_s if wall_s > 0 else 0.0
+                log_request_metrics({
+                    "request_id": req_id,
+                    "ttfb_ms": ttfb_ms,
+                    "wall_s": wall_s,
+                    "audio_s": audio_s,
+                    "rtf": rtf,
+                    "xrt": xrt,
+                    "kbps": kbps,
+                    "canceled": False,
+                })
                 await send_json_safe({
                     "type": "done",
                     "request_id": req_id,

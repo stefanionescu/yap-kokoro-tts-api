@@ -57,7 +57,9 @@ def _is_primer_chunk(b: bytes) -> bool:
     return len(b) <= prime_bytes and not any(b)
 
 async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool):
-    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
+    api_key = os.getenv("API_KEY", "")
+    qs = f"?api_key={api_key}" if api_key else ""
+    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws" + qs
     request_id = f"req-{uuid.uuid4().hex[:8]}"
     t_first = None
     total = 0
@@ -123,7 +125,9 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
 
 async def _ws_ready_check(base_url: str, voice: str) -> bool:
     """Perform a WS handshake (start→started→stop) to validate readiness."""
-    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
+    api_key = os.getenv("API_KEY", "")
+    qs = f"?api_key={api_key}" if api_key else ""
+    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws" + qs
     try:
         async with websockets.connect(ws_url, max_size=None, compression=None, ping_interval=20, ping_timeout=20) as ws:
             await ws.send(json.dumps({"type": "start", "voice": voice, "format": "pcm", "sample_rate": SAMPLE_RATE}))

@@ -7,8 +7,8 @@ number of requests, split evenly across voices (female/male), with configurable
 concurrency using WebSocket protocol only.
 
 Examples (run on pod):
-  python test/bench.py --n 40 --concurrency 12
-  python test/bench.py --n 100 --concurrency 8 --host your-host
+  python test/bench.py --n 40 --concurrency 2
+  python test/bench.py --n 100 --concurrency 3 --host your-host
 
 Host/port default to localhost:8000; override with --host/--port.
 """
@@ -95,7 +95,9 @@ def _is_primer_chunk(b: bytes) -> bool:
 
 async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int) -> List[Dict[str, float]]:
     """Open one WS and send multiple speak() calls sequentially to simulate Pipecat."""
-    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
+    api_key = os.getenv("API_KEY", "")
+    qs = f"?api_key={api_key}" if api_key else ""
+    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws" + qs
     results: List[Dict[str, float]] = []
     async with websockets.connect(ws_url, max_size=None, compression=None) as ws:
         await ws.send(json.dumps({

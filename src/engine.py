@@ -9,6 +9,7 @@ from typing import AsyncGenerator, Iterable, Optional, List
 from dataclasses import dataclass
 import json
 from pathlib import Path
+import time
 
 import numpy as np
 from kokoro import KPipeline
@@ -117,7 +118,7 @@ class KokoroEngine:
         queue_size = int(os.getenv("QUEUE_MAXSIZE", "128"))
         self._pri_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
         self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
-        self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "8"))
+        self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "4"))
         self._worker_tasks: list[asyncio.Task] = []
         
         # Round-robin scheduling parameters
@@ -563,6 +564,38 @@ class KokoroEngine:
             "split_pattern": self.split_pattern,
             "stream_chunk_seconds": self.stream_chunk_samples / float(SAMPLE_RATE),
         }
+
+    # Simple rolling metrics store (in-memory + file append)
+    _metrics_log_path = Path("logs/metrics.log")
+    _last_metrics: dict[str, float] = {}
+
+    def log_request_metrics(self, metrics: dict) -> None:
+        """Append request metrics to a log file and update memory cache.
+
+        Expected keys: request_id, ttfb_ms, wall_s, audio_s, rtf, xrt, kbps, canceled(bool)
+        """
+        ts = time.time()
+        try:
+            self._last_metrics = {
+                "ts": ts,
+                "ttfb_ms": float(metrics.get("ttfb_ms", 0.0)),
+                "wall_s": float(metrics.get("wall_s", 0.0)),
+                "audio_s": float(metrics.get("audio_s", 0.0)),
+                "rtf": float(metrics.get("rtf", 0.0)),
+                "xrt": float(metrics.get("xrt", 0.0)),
+                "kbps": float(metrics.get("kbps", 0.0)),
+                "canceled": bool(metrics.get("canceled", False)),
+            }
+            rec = {
+                "ts": ts,
+                "request_id": metrics.get("request_id"),
+                **self._last_metrics,
+            }
+            self._metrics_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._metrics_log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
 
 
 @dataclass

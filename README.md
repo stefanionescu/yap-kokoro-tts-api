@@ -2,6 +2,8 @@
 
 FastAPI service around Kokoro‑82M with a persistent WebSocket protocol designed for low‑latency sentence‑level streaming and barge‑in. Output is 24 kHz mono PCM16.
 
+All parameters and tests were used and run on L40S GPUs.
+
 ### Run
 ```bash
 bash scripts/setup.sh
@@ -28,6 +30,7 @@ source venv/bin/activate && python test/warmup.py --save
 Notes:
 - One connection stays open for many sentences. Concurrency is handled inside the engine via a fair round‑robin scheduler.
 - Cancel is immediate: queued or in‑flight audio for that `request_id` is dropped.
+- Authentication: append `?api_key=YOUR_KEY` to the WS URL. Set `API_KEY` in `.env`.
 
 ### Pipecat integration
 - Use a custom WebSocket TTS service or adapt PipeCat’s OpenAI TTS service if you prefer sentence‑per‑HTTP (slightly higher latency).
@@ -73,20 +76,20 @@ source venv/bin/activate
 # Try several conc values to find the sweet spot
 python test/bench.py --proto ws --n 60 --concurrency 1
 python test/bench.py --proto ws --n 60 --concurrency 2
+python test/bench.py --proto ws --n 60 --concurrency 3
 python test/bench.py --proto ws --n 60 --concurrency 4
-python test/bench.py --proto ws --n 60 --concurrency 8
-python test/bench.py --proto ws --n 60 --concurrency 12
 ```
 - Pick the highest concurrency where p95 TTFB is acceptable. Set it via `MAX_CONCURRENT_JOBS` (see below) and scale replicas for more QPS.
 
 ### Config knobs (sane defaults set by setup.sh)
 - TTFB/streaming
-  - `FIRST_SEGMENT_MAX_WORDS` (default 3)
+  - `FIRST_SEGMENT_MAX_WORDS` (default 2)
   - `FIRST_SEGMENT_BOUNDARIES` (default `.,?!;:`)
   - `STREAM_CHUNK_SECONDS` (default 0.02)
   - `PRIME_STREAM=1`, `PRIME_BYTES=512`
+  - `WS_FIRST_CHUNK_IMMEDIATE=1`, `WS_BUFFER_BYTES=960`, `WS_FLUSH_EVERY=1`, `WS_SEND_TIMEOUT=3.0`
 - Concurrency/backpressure
-  - `MAX_CONCURRENT_JOBS` (default 8)
+  - `MAX_CONCURRENT_JOBS` (default 4)
   - `QUEUE_MAXSIZE` (default 128) – excess requests block in queue
 - GPU
   - `KOKORO_DEVICE` (e.g., `cuda:0`)
@@ -94,6 +97,19 @@ python test/bench.py --proto ws --n 60 --concurrency 12
 
 ### Health & status
 - `/healthz` (200 OK), `/readyz` (engine + device)
+
+### Authentication
+- Set `API_KEY` in `.env` (created by `scripts/setup.sh`). Replace the default `dev-key` in production.
+- Clients append the key to the WS URL: `/v1/audio/speech/stream/ws?api_key=YOUR_KEY`. Our client/bench/warmup add it automatically from `.env`.
+
+### Metrics & reporting
+- Each request writes JSON to `logs/metrics.log`: `ts`, `request_id`, `ttfb_ms`, `wall_s`, `audio_s`, `rtf`, `xrt`, `kbps`, `canceled`.
+- Print rolling summaries:
+```bash
+source venv/bin/activate && python src/metrics.py
+# Custom windows
+python src/metrics.py --periods "30m,1h,6h,24h,3d"
+```
 
 ### Notes
 - Voices come from Kokoro‑82M: see the official list (`af_aoede`, `am_michael`, etc.).

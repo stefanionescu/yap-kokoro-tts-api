@@ -117,14 +117,16 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
     """Persistent WS: start → speak(text) → binary PCM → done. Save via ffmpeg or raw."""
     norm_host, tls_from_scheme = _sanitize_host_and_scheme(host)
     force_tls = use_tls or tls_from_scheme or _is_runpod_proxy_host(norm_host)
+    api_key = os.getenv("API_KEY", "")
+    qs = f"?api_key={api_key}" if api_key else ""
     if _is_runpod_proxy_host(norm_host):
         # RunPod proxy terminates TLS and forwards to container; no explicit port in public URL
-        ws_url = f"wss://{norm_host}/v1/audio/speech/stream/ws"
+        ws_url = f"wss://{norm_host}/v1/audio/speech/stream/ws{qs}"
     else:
         scheme = "wss" if force_tls else "ws"
         # Only append port if it's not already present
         netloc = norm_host if ":" in norm_host else f"{norm_host}:{port}"
-        ws_url = f"{scheme}://{netloc}/v1/audio/speech/stream/ws"
+        ws_url = f"{scheme}://{netloc}/v1/audio/speech/stream/ws{qs}"
     request_id = f"req-{uuid.uuid4().hex[:8]}"
 
     proc: subprocess.Popen | None = None
