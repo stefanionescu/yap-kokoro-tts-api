@@ -1,9 +1,7 @@
 import json
 import time
-from pathlib import Path
 from typing import Dict, List, Tuple
-
-METRICS_LOG_PATH = Path("logs/metrics.log")
+from constants import METRICS_LOG_PATH
 
 def log_request_metrics(metrics: Dict) -> None:
     """Append per-request metrics as a JSON line.

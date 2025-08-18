@@ -4,6 +4,20 @@ setup_logger()
 import time
 import os
 from src.engine import KokoroEngine
+from constants import (
+    SAMPLE_RATE,
+    WS_DEFAULT_BUFFER_BYTES,
+    WS_DEFAULT_FLUSH_EVERY,
+    WS_DEFAULT_SEND_TIMEOUT_S,
+    WS_DEFAULT_LONG_SEND_LOG_MS,
+    SPEED_MIN,
+    SPEED_MAX,
+    MAX_UTTERANCE_WORDS_DEFAULT,
+    PRIME_STREAM_DEFAULT,
+    PRIME_BYTES_DEFAULT,
+    JOB_QUEUE_GET_TIMEOUT_S,
+    PROCESSOR_LOOP_SLEEP_S,
+)
 from src.metrics import log_request_metrics
 import torch
 from dotenv import load_dotenv
@@ -70,7 +84,7 @@ async def tts_stream_ws(websocket: WebSocket):
     canceled: set[str] = set()
     active_request_id: str | None = None
     closing = False
-    max_utterance_words = int(os.getenv("MAX_UTTERANCE_WORDS", "150"))
+    max_utterance_words = int(os.getenv("MAX_UTTERANCE_WORDS", str(MAX_UTTERANCE_WORDS_DEFAULT)))
     # Heartbeat disabled
 
     async def send_json_safe(obj: dict) -> None:
@@ -97,12 +111,12 @@ async def tts_stream_ws(websocket: WebSocket):
         await send_json_safe({"type": "started_speak", "request_id": req_id})
 
         # Optional primer
-        if os.getenv("PRIME_STREAM", "0") == "1":
+        if os.getenv("PRIME_STREAM", str(PRIME_STREAM_DEFAULT)) == "1":
             with contextlib.suppress(Exception):
                 async with send_lock:
-                    await websocket.send_bytes(b"\0" * int(os.getenv("PRIME_BYTES", "512")))
+                    await websocket.send_bytes(b"\0" * int(os.getenv("PRIME_BYTES", str(PRIME_BYTES_DEFAULT))))
 
-        safe_speed = max(0.5, min(2.0, float(speed))) if speed is not None else None
+        safe_speed = max(SPEED_MIN, min(SPEED_MAX, float(speed))) if speed is not None else None
         start_time = time.perf_counter()
         total_samples = 0
         first_audio_at: float | None = None
@@ -112,10 +126,10 @@ async def tts_stream_ws(websocket: WebSocket):
         chunks_since_flush = 0
 
         # WS send controls (align with setup.sh defaults)
-        BUF_TARGET = int(os.getenv("WS_BUFFER_BYTES", "16384"))
-        FLUSH_EVERY = int(os.getenv("WS_FLUSH_EVERY", "16"))
-        SEND_TIMEOUT = float(os.getenv("WS_SEND_TIMEOUT", "3.0"))
-        LONG_SEND_LOG_MS = float(os.getenv("WS_LONG_SEND_LOG_MS", "250.0"))
+        BUF_TARGET = int(os.getenv("WS_BUFFER_BYTES", str(WS_DEFAULT_BUFFER_BYTES)))
+        FLUSH_EVERY = int(os.getenv("WS_FLUSH_EVERY", str(WS_DEFAULT_FLUSH_EVERY)))
+        SEND_TIMEOUT = float(os.getenv("WS_SEND_TIMEOUT", str(WS_DEFAULT_SEND_TIMEOUT_S)))
+        LONG_SEND_LOG_MS = float(os.getenv("WS_LONG_SEND_LOG_MS", str(WS_DEFAULT_LONG_SEND_LOG_MS)))
 
         async def _flush() -> None:
             nonlocal buf, chunks_since_flush, segment_index, total_samples, first_chunk, first_audio_at
@@ -181,7 +195,7 @@ async def tts_stream_ws(websocket: WebSocket):
                 t_end = time.perf_counter()
                 wall_s = (t_end - start_time)
                 ttfb_ms = ((first_audio_at or t_end) - start_time) * 1000.0
-                audio_s = total_samples / 24000.0
+                audio_s = total_samples / float(SAMPLE_RATE)
                 rtf = wall_s / audio_s if audio_s > 0 else float("inf")
                 xrt = audio_s / wall_s if wall_s > 0 else 0.0
                 # PCM16 mono: 2 bytes per sample → convert samples→KB for throughput
@@ -303,7 +317,7 @@ async def tts_stream_ws(websocket: WebSocket):
                 break
             if active_request_id is None:
                 try:
-                    job = await asyncio.wait_for(job_queue.get(), timeout=0.05)
+                    job = await asyncio.wait_for(job_queue.get(), timeout=JOB_QUEUE_GET_TIMEOUT_S)
                 except asyncio.TimeoutError:
                     continue
                 if job.get("request_id") in canceled:
@@ -313,7 +327,7 @@ async def tts_stream_ws(websocket: WebSocket):
                 await stream_one(job)
                 job_queue.task_done()
             else:
-                await asyncio.sleep(0.005)
+                await asyncio.sleep(PROCESSOR_LOOP_SLEEP_S)
 
         # Graceful shutdown: wait for receiver to finish or cancel it
         with contextlib.suppress(Exception):

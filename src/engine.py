@@ -15,10 +15,23 @@ import time
 import numpy as np
 from kokoro import KPipeline
 import torch
+from constants import (
+    SAMPLE_RATE,
+    STREAM_DEFAULT_CHUNK_SECONDS,
+    SCHED_DEFAULT_QUANTUM_BYTES,
+    PRIORITY_DEFAULT_QUANTUM_BYTES,
+    DEFAULT_QUEUE_WAIT_SLA_MS,
+    DEFAULT_MAX_QUEUED_REQUESTS,
+    DEFAULT_EWMA_WALL_MS,
+    EWMA_ALPHA,
+    WORKER_IDLE_SLEEP_S,
+    OPUS_DEFAULT_BITRATE,
+    OPUS_DEFAULT_APPLICATION,
+    DEFAULT_QUEUE_MAXSIZE,
+    MAX_DEFAULT_CONCURRENT_JOBS,
+)
 
 logger = logging.getLogger(__name__)
-
-SAMPLE_RATE = 24000  # Kokoro outputs 24 kHz
 
 def _float_to_pcm16_bytes(audio: np.ndarray) -> bytes:
     if audio is None or audio.size == 0:
@@ -84,7 +97,7 @@ class KokoroEngine:
         self.split_pattern = os.getenv("KOKORO_SPLIT_PATTERN", r"\n+")
         # Stream chunking in samples
         self.stream_chunk_samples = int(
-            float(os.getenv("STREAM_CHUNK_SECONDS", "0.04")) * SAMPLE_RATE
+            float(os.getenv("STREAM_CHUNK_SECONDS", str(STREAM_DEFAULT_CHUNK_SECONDS))) * SAMPLE_RATE
         )
         # Fast-TTFB first-segment control
         self.first_segment_max_words = int(os.getenv("FIRST_SEGMENT_MAX_WORDS", "2"))
@@ -112,25 +125,25 @@ class KokoroEngine:
         # (memory cap already applied above before model init)
 
         # Async job queues and worker pool
-        queue_size = int(os.getenv("QUEUE_MAXSIZE", "128"))
+        queue_size = int(os.getenv("QUEUE_MAXSIZE", str(DEFAULT_QUEUE_MAXSIZE)))
         self._pri_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
         self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
-        self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "4"))
+        self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", str(MAX_DEFAULT_CONCURRENT_JOBS)))
         self._worker_tasks: list[asyncio.Task] = []
         # Number of in-flight synthesis streams (process-wide)
         self._inflight_count: int = 0
         # Total accepted requests (running + queued/reserved at API)
         self._accepted_slots: int = 0
         # EWMA of observed job wall time (ms) used for SLA estimation
-        self._ewma_wall_ms: float = float(os.getenv("AVG_JOB_WALL_MS", "2500"))
+        self._ewma_wall_ms: float = float(os.getenv("AVG_JOB_WALL_MS", str(DEFAULT_EWMA_WALL_MS)))
         
         # Round-robin scheduling parameters
-        self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", "16384")))
+        self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", str(SCHED_DEFAULT_QUANTUM_BYTES))))
         self.active_limit = self.max_concurrent
         
         # Admission control
-        self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", "1000"))
-        self.max_queued_requests = int(os.getenv("MAX_QUEUED_REQUESTS", "4"))
+        self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", str(DEFAULT_QUEUE_WAIT_SLA_MS)))
+        self.max_queued_requests = int(os.getenv("MAX_QUEUED_REQUESTS", str(DEFAULT_MAX_QUEUED_REQUESTS)))
 
         # Cancellation registry per request_id
         self._cancel_flags: dict[str, bool] = {}
@@ -229,13 +242,13 @@ class KokoroEngine:
 
             if not active:
                 # nothing to do; small sleep so we don't spin
-                await asyncio.sleep(0.001)
+                await asyncio.sleep(WORKER_IDLE_SLEEP_S)
                 continue
 
             # Round-robin one quantum
             job, agen = active.popleft()
             sent = 0
-            prio_q = int(float(os.getenv("PRIORITY_QUANTUM_BYTES", "2048")))
+            prio_q = int(float(os.getenv("PRIORITY_QUANTUM_BYTES", str(PRIORITY_DEFAULT_QUANTUM_BYTES))))
             budget = prio_q if getattr(job, "priority", False) else self.quantum_bytes
             try:
                 while sent < budget:
@@ -363,8 +376,8 @@ class KokoroEngine:
             "-loglevel", "error",
             "-f", "s16le", "-ar", str(SAMPLE_RATE), "-ac", "1", "-i", "-",
             "-c:a", "libopus",
-            "-b:a", os.getenv("OPUS_BITRATE", "48k"),
-            "-application", os.getenv("OPUS_APPLICATION", "audio"),
+            "-b:a", os.getenv("OPUS_BITRATE", OPUS_DEFAULT_BITRATE),
+            "-application", os.getenv("OPUS_APPLICATION", OPUS_DEFAULT_APPLICATION),
             "-f", "ogg",
             "-",
         ]
@@ -432,7 +445,7 @@ class KokoroEngine:
     def record_job_wall_ms(self, wall_ms: float) -> None:
         """Update EWMA for job wall time used in SLA estimation."""
         try:
-            alpha = 0.2
+            alpha = EWMA_ALPHA
             self._ewma_wall_ms = (1 - alpha) * self._ewma_wall_ms + alpha * max(1.0, float(wall_ms))
         except Exception:
             pass
