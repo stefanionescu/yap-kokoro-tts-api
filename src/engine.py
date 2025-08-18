@@ -27,7 +27,6 @@ def _float_to_pcm16_bytes(audio: np.ndarray) -> bytes:
     pcm = (audio * 32767.0).round().astype(np.int16)
     return pcm.tobytes()
 
-
 class KokoroEngine:
     """
     Lightweight engine for Kokoro using the official KPipeline.
