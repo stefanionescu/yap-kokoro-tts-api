@@ -86,7 +86,7 @@ python test/bench.py --proto ws --n 60 --concurrency 12
   - `STREAM_CHUNK_SECONDS` (default 0.02)
   - `PRIME_STREAM=1`, `PRIME_BYTES=512`
 - Concurrency/backpressure
-  - `MAX_CONCURRENT_JOBS` (default 12)
+  - `MAX_CONCURRENT_JOBS` (default 8)
   - `QUEUE_MAXSIZE` (default 128) – excess requests block in queue
 - GPU
   - `KOKORO_DEVICE` (e.g., `cuda:0`)

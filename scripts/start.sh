@@ -42,13 +42,14 @@ export STREAM_CHUNK_SECONDS=${STREAM_CHUNK_SECONDS:-0.02}
 echo "Priming: $PRIME_STREAM | Stream chunk seconds: $STREAM_CHUNK_SECONDS"
 
 # TTFB tuning defaults (overridable)
-export FIRST_SEGMENT_MAX_WORDS=${FIRST_SEGMENT_MAX_WORDS:-3}
-export FIRST_SEGMENT_BOUNDARIES=${FIRST_SEGMENT_BOUNDARIES:-".,?!;:"}
+export FIRST_SEGMENT_MAX_WORDS=${FIRST_SEGMENT_MAX_WORDS:-2}
+export FIRST_SEGMENT_BOUNDARIES=${FIRST_SEGMENT_BOUNDARIES:-",?!;:"}
+export FIRST_SEGMENT_REQUIRE_BOUNDARY=${FIRST_SEGMENT_REQUIRE_BOUNDARY:-1}
 # Conservative defaults to avoid model/library deadlocks under load
-export MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-12}
+export MAX_CONCURRENT_JOBS=${MAX_CONCURRENT_JOBS:-8}
 export QUEUE_MAXSIZE=${QUEUE_MAXSIZE:-128}
 export PRIME_BYTES=${PRIME_BYTES:-512}
-echo "First segment max words: $FIRST_SEGMENT_MAX_WORDS | boundaries: $FIRST_SEGMENT_BOUNDARIES"
+echo "First segment max words: $FIRST_SEGMENT_MAX_WORDS | boundaries: $FIRST_SEGMENT_BOUNDARIES | require_boundary: $FIRST_SEGMENT_REQUIRE_BOUNDARY"
 echo "Concurrency: $MAX_CONCURRENT_JOBS | Queue size: $QUEUE_MAXSIZE"
 
 # Optional CUDA reservation/capping

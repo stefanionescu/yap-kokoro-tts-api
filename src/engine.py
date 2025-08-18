@@ -89,8 +89,8 @@ class KokoroEngine:
             float(os.getenv("STREAM_CHUNK_SECONDS", "0.02")) * SAMPLE_RATE
         )
         # Fast-TTFB first-segment control
-        self.first_segment_max_words = int(os.getenv("FIRST_SEGMENT_MAX_WORDS", "3"))
-        self.first_segment_boundary_chars = os.getenv("FIRST_SEGMENT_BOUNDARIES", ".?!,;:-—")
+        self.first_segment_max_words = int(os.getenv("FIRST_SEGMENT_MAX_WORDS", "2"))
+        self.first_segment_boundary_chars = os.getenv("FIRST_SEGMENT_BOUNDARIES", ",?!;:")
 
         logger.info(
             "Kokoro ready | voices: female=%s male=%s | speed=%s split=%s chunk=%d samples",
@@ -117,7 +117,7 @@ class KokoroEngine:
         queue_size = int(os.getenv("QUEUE_MAXSIZE", "128"))
         self._pri_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
         self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
-        self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "12"))
+        self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "8"))
         self._worker_tasks: list[asyncio.Task] = []
         
         # Round-robin scheduling parameters

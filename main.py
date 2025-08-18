@@ -62,6 +62,8 @@ async def tts_stream_ws(websocket: WebSocket):
     canceled: set[str] = set()
     active_request_id: str | None = None
     closing = False
+    max_utterance_words = int(os.getenv("MAX_UTTERANCE_WORDS", "150"))
+    # Heartbeat disabled
 
     async def send_json_safe(obj: dict) -> None:
         try:
@@ -100,9 +102,9 @@ async def tts_stream_ws(websocket: WebSocket):
         buf = bytearray()
         chunks_since_flush = 0
 
-        # WS send controls
-        BUF_TARGET = int(os.getenv("WS_BUFFER_BYTES", "1024"))
-        FLUSH_EVERY = int(os.getenv("WS_FLUSH_EVERY", "2"))
+        # WS send controls (align with setup.sh defaults)
+        BUF_TARGET = int(os.getenv("WS_BUFFER_BYTES", "960"))
+        FLUSH_EVERY = int(os.getenv("WS_FLUSH_EVERY", "1"))
         SEND_TIMEOUT = float(os.getenv("WS_SEND_TIMEOUT", "3.0"))
         LONG_SEND_LOG_MS = float(os.getenv("WS_LONG_SEND_LOG_MS", "250.0"))
 
@@ -154,7 +156,7 @@ async def tts_stream_ws(websocket: WebSocket):
                     break
                 buf.extend(chunk)
                 chunks_since_flush += 1
-                if first_chunk and os.getenv("WS_FIRST_CHUNK_IMMEDIATE", "0") == "1" and len(buf) > 0:
+                if first_chunk and os.getenv("WS_FIRST_CHUNK_IMMEDIATE", "1") == "1" and len(buf) > 0:
                     await _flush()
                     continue
                 if len(buf) >= BUF_TARGET or chunks_since_flush >= FLUSH_EVERY:
@@ -203,13 +205,47 @@ async def tts_stream_ws(websocket: WebSocket):
                 await send_json_safe({"type": "started", "voice": default_voice, "format": out_format, "timestamps": want_timestamps})
             elif msg_type == "speak":
                 req_id = data.get("request_id") or f"req-{int(time.time()*1000)}"
+                # Validate text
+                text_val = data.get("text")
+                if not isinstance(text_val, str):
+                    await send_json_safe({"type": "error", "code": "bad_text", "request_id": req_id})
+                    continue
+                text_val = text_val.strip()
+                if not text_val:
+                    await send_json_safe({"type": "error", "code": "empty_text", "request_id": req_id})
+                    continue
+                # Word cap
+                try:
+                    word_count = len(text_val.split())
+                except Exception:
+                    word_count = 0
+                if max_utterance_words > 0 and word_count > max_utterance_words:
+                    await send_json_safe({
+                        "type": "error",
+                        "code": "too_long",
+                        "request_id": req_id,
+                        "max_words": max_utterance_words,
+                        "got_words": word_count,
+                    })
+                    continue
+                # Speed bound and sanitize
+                spd_raw = data.get("speed")
+                spd_val = None
+                if spd_raw is not None:
+                    try:
+                        spd_val = float(spd_raw)
+                    except Exception:
+                        spd_val = None
+                    else:
+                        spd_val = max(0.5, min(2.0, spd_val))
+
                 if not engine.can_accept():
                     await send_json_safe({"type": "queue", "request_id": req_id})
                 await job_queue.put({
                     "request_id": req_id,
-                    "text": (data.get("text") or "").strip(),
+                    "text": text_val,
                     "voice": data.get("voice"),
-                    "speed": data.get("speed"),
+                    "speed": spd_val,
                 })
             elif msg_type == "cancel":
                 req_id = data.get("request_id")

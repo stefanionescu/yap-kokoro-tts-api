@@ -171,7 +171,7 @@ def main() -> None:
     print(f"Benchmark → WebSocket | n={args.n} | concurrency={args.concurrency} | host={args.host}:{args.port}")
     print(f"Text length: {len(args.text)} characters")
     print(f"Text preview: {args.text[:100]}...")
-    print(f"Expected audio duration: ~{len(args.text.split()) * 0.6:.1f} seconds (rough estimate)")
+    # ~0.6s per 10 words is a rougher average than needed; let RTF report instead
 
     t0 = time.time()
     ws_res = asyncio.run(bench_ws(base_url, args.text, args.n, args.concurrency))
