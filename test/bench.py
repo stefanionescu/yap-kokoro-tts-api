@@ -21,9 +21,13 @@ import statistics as stats
 from typing import Dict, List, Tuple
 
 import websockets
+import os
+from dotenv import load_dotenv
 
 SAMPLE_RATE = 24000
 
+# Load .env so defaults can come from RUNPOD_TCP_HOST/RUNPOD_TCP_PORT
+load_dotenv(override=True)
 DEFAULT_TEXT = (
     "The origin of humankind is a fascinating topic with deep roots in our "
     "evolutionary history. Our species, Homo sapiens, emerged in Africa "
@@ -155,8 +159,8 @@ async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int) 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--host", default="localhost")
-    ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument("--host", default=os.getenv("RUNPOD_TCP_HOST", "localhost"))
+    ap.add_argument("--port", type=int, default=int(os.getenv("RUNPOD_TCP_PORT", "8000")))
     ap.add_argument("--proto", choices=["ws"], default="ws")
     ap.add_argument("--n", type=int, default=40, help="total requests")
     ap.add_argument("--concurrency", type=int, default=12)

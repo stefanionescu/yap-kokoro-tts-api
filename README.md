@@ -35,6 +35,8 @@ Notes:
 
 Minimal client example is provided in `test/client.py` and a load benchmark in `test/bench.py` using the new protocol.
 
+By default, the client and tools read `RUNPOD_TCP_HOST` and `RUNPOD_TCP_PORT` from `.env`. Override on the CLI if needed.
+
 ### Example WS session
 ```json
 { "type": "start", "voice": "female", "format": "pcm", "sample_rate": 24000 }

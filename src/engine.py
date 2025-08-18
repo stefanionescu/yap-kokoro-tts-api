@@ -504,13 +504,19 @@ class KokoroEngine:
         out_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=32)
         text = (prompt or "").strip()
         pieces = self._segment_for_fast_ttfb(text)
-        first = [pieces[0]] if pieces else []
-        rest = pieces[1:] if len(pieces) > 1 else []
         # Register request for cancellation tracking
         self.register_request(request_id)
-        await self._pri_queue.put(_TTSJob(pieces=first, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=(len(rest)==0), priority=True, speed=speed, request_id=request_id))
-        if rest:
-            await self._job_queue.put(_TTSJob(pieces=rest, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=True, priority=False, speed=speed, request_id=request_id))
+        # IMPORTANT: enqueue as a single job to avoid RR interleaving across segments
+        await self._pri_queue.put(_TTSJob(
+            pieces=pieces,
+            voice=voice or "female",
+            output_format=output_format,
+            out_queue=out_q,
+            end_stream=True,
+            priority=True,
+            speed=speed,
+            request_id=request_id,
+        ))
 
         while True:
             chunk = await out_q.get()

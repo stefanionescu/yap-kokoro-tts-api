@@ -29,9 +29,33 @@ import shutil
 import subprocess
 from urllib.parse import urlsplit
 
+from dotenv import load_dotenv
+
 import websockets
 
 SAMPLE_RATE = 24000  # Kokoro outputs 24kHz PCM16 mono
+
+# Load .env so defaults can come from RUNPOD_TCP_HOST/RUNPOD_TCP_PORT
+load_dotenv(override=True)
+
+# Default long text (matches test/bench.py)
+DEFAULT_TEXT = (
+    "The origin of humankind is a fascinating topic with deep roots in our "
+    "evolutionary history. Our species, Homo sapiens, emerged in Africa "
+    "around 300,000 years ago. Fossil evidence suggests we evolved from "
+    "earlier hominid species like Homo erectus and Australopithecus afarensis "
+    "through a process of natural selection and adaptation to changing "
+    "environments. Genetic studies have traced our ancestry back to a small "
+    "population that migrated out of Africa around 70,000 years ago, "
+    "eventually populating the entire globe. Over time, different human "
+    "populations diverged and developed unique traits due to geographic "
+    "isolation and varying environmental pressures. The story of human origins "
+    "is still being pieced together through ongoing archaeological discoveries "
+    "and advancements in genetic research. However, the prevailing scientific "
+    "consensus points to a single African origin for all modern humans, with "
+    "our species' remarkable journey spanning hundreds of thousands of years "
+    "and continents."
+)
 
 
 def build_ffmpeg_cmd(output_path: str, output_format: str, speed: float = 1.4) -> list[str]:
@@ -174,13 +198,22 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="WebSocket Kokoro TTS client → save audio via ffmpeg")
-    parser.add_argument("--host", default="7v9iogacp102xj-8000.proxy.runpod.net", help="API host (RunPod proxy host or hostname[:port])")
-    parser.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
+    parser.add_argument(
+        "--host",
+        default=os.getenv("RUNPOD_TCP_HOST", "localhost"),
+        help="API host (defaults to RUNPOD_TCP_HOST or localhost)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("RUNPOD_TCP_PORT", "8000")),
+        help="API port (defaults to RUNPOD_TCP_PORT or 8000)",
+    )
     parser.add_argument("--voice", choices=["female", "male"], default="female", help="Voice to use")
-    parser.add_argument("--text", default="That's amazing! Congratulations for an amazing job!", help="Input text to synthesize")
+    parser.add_argument("--text", default=DEFAULT_TEXT, help="Input text to synthesize")
     parser.add_argument("--out", default="hello.wav", help="Output file path (wav/ogg/mp3/pcm)")
     parser.add_argument("--format", choices=["wav", "ogg", "opus", "mp3", "pcm"], default="wav", help="Output format")
-    parser.add_argument("--speed", type=float, default=1.4, help="Speech speed multiplier (0.5-2.0, default: 1.4 to match server)")
+    parser.add_argument("--speed", type=float, default=1.0, help="Speech speed multiplier (0.5-2.0, default: 1.0)")
     parser.add_argument("--tls", action="store_true", help="Use wss:// (TLS)")
     return parser.parse_args()
 
