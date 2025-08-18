@@ -1,8 +1,8 @@
-## Kokoro TTS Deployment
+## Kokoro TTS Deployment (Pipecat‑ready)
 
-FastAPI service around Kokoro‑82M (24 kHz PCM streaming). Minimal, production‑oriented.
+FastAPI service around Kokoro‑82M with a persistent WebSocket protocol designed for low‑latency sentence‑level streaming and barge‑in. Output is 24 kHz mono PCM16.
 
-### One‑shot run
+### Run
 ```bash
 bash scripts/setup.sh
 bash scripts/start.sh
@@ -11,17 +11,38 @@ bash scripts/tail_bg_logs.sh
 source venv/bin/activate && python test/warmup.py --save
 ```
 
-### Call the API (HTTP streaming)
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech/stream \
-  -H "Content-Type: application/json" \
-  -d '{"input":"Hello from Kokoro","voice":"female","format":"pcm"}' \
-  --output out.pcm
-```
-
-### WebSocket (binary PCM)
+### Protocol (WebSocket only)
 - Route: `/v1/audio/speech/stream/ws`
-- Send JSON `{continue:true, segment_id:"seg-1", input:"...", voice:"female", format:"pcm"}` then read binary audio frames until `{type:"end"}`.
+- Messages:
+  - Client → Server
+    - `{"type":"start", "voice":"female", "format":"pcm", "sample_rate":24000, "timestamps":false}`
+    - For each sentence: `{"type":"speak", "request_id":"uuid", "text":"Okay, let's go.", "voice":"female", "speed":1.0}`
+    - Barge‑in: `{"type":"cancel", "request_id":"uuid"}`
+    - End session: `{"type":"stop"}`
+  - Server → Client
+    - `{"type":"started"}` then `{"type":"started_speak", "request_id":"uuid"}`
+    - Binary frames with 20–40 ms PCM16 chunks
+    - Periodic `{"type":"meta", "request_id":"uuid", ...}`
+    - Completion: `{"type":"done", "request_id":"uuid", "duration_s":0.62}` or `{"type":"canceled", ...}`
+
+Notes:
+- One connection stays open for many sentences. Concurrency is handled inside the engine via a fair round‑robin scheduler.
+- Cancel is immediate: queued or in‑flight audio for that `request_id` is dropped.
+
+### Pipecat integration
+- Use a custom WebSocket TTS service or adapt PipeCat’s OpenAI TTS service if you prefer sentence‑per‑HTTP (slightly higher latency).
+- Configure PCM output at 24 kHz mono. Sentence aggregation should remain enabled in Pipecat.
+
+Minimal client example is provided in `test/client.py` and a load benchmark in `test/bench.py` using the new protocol.
+
+### Example WS session
+```json
+{ "type": "start", "voice": "female", "format": "pcm", "sample_rate": 24000 }
+{ "type": "speak", "request_id": "uuid-1", "text": "Okay, let's go." }
+<binary PCM> ...
+{ "type": "done", "request_id": "uuid-1" }
+{ "type": "stop" }
+```
 
 ### Custom voices (on‑pod only)
 - Blends are persisted in `custom_voices/custom_voices.json`.
@@ -47,7 +68,7 @@ bash scripts/stop.sh || true && bash scripts/start.sh
 ```bash
 # On the pod
 source venv/bin/activate
-# Try several conc values to find the sweet spot (WS recommended)
+# Try several conc values to find the sweet spot
 python test/bench.py --proto ws --n 60 --concurrency 1
 python test/bench.py --proto ws --n 60 --concurrency 2
 python test/bench.py --proto ws --n 60 --concurrency 4
@@ -56,7 +77,7 @@ python test/bench.py --proto ws --n 60 --concurrency 12
 ```
 - Pick the highest concurrency where p95 TTFB is acceptable. Set it via `MAX_CONCURRENT_JOBS` (see below) and scale replicas for more QPS.
 
-### Config knobs (sane defaults set by start.sh)
+### Config knobs (sane defaults set by setup.sh)
 - TTFB/streaming
   - `FIRST_SEGMENT_MAX_WORDS` (default 3)
   - `FIRST_SEGMENT_BOUNDARIES` (default `.,?!;:`)
@@ -70,7 +91,7 @@ python test/bench.py --proto ws --n 60 --concurrency 12
   - `KOKORO_GPU_MEMORY_FRACTION` (e.g., `0.95`) – soft cap; use MIG for hard isolation
 
 ### Health & status
-- `/healthz` (200 OK), `/readyz` (engine + device), `/api/status` (device, CUDA, GPU mem, ffmpeg)
+- `/healthz` (200 OK), `/readyz` (engine + device)
 
 ### Notes
 - Voices come from Kokoro‑82M: see the official list (`af_aoede`, `am_michael`, etc.).

@@ -127,6 +127,9 @@ class KokoroEngine:
         # Admission control
         self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", "800"))
 
+        # Cancellation registry per request_id
+        self._cancel_flags: dict[str, bool] = {}
+
         # Extend available voices with custom names
         self._refresh_available_voices()
 
@@ -193,7 +196,14 @@ class KokoroEngine:
         active = deque()  # items: (job, agen) where agen is async generator of PCM bytes
 
         async def start_from_job(job: "_TTSJob"):
-            agen = self._synthesize_stream_pieces(job.pieces, job.voice, job.output_format, job.speed)
+            # If canceled before start, short-circuit by yielding nothing
+            if job.request_id and self._cancel_flags.get(job.request_id, False):
+                async def _empty():
+                    if False:
+                        yield b""  # pragma: no cover
+                    return
+                return (job, _empty())
+            agen = self._synthesize_stream_pieces(job.pieces, job.voice, job.output_format, job.speed, job.request_id)
             return (job, agen)
 
         while True:
@@ -240,9 +250,13 @@ class KokoroEngine:
                 # Not finished; rotate back
                 active.append((job, agen))
 
-    async def _synthesize_stream_pieces(self, pieces: List[str], voice: str, output_format: str, speed: Optional[float] = None) -> AsyncGenerator[bytes, None]:
+    async def _synthesize_stream_pieces(self, pieces: List[str], voice: str, output_format: str, speed: Optional[float] = None, request_id: Optional[str] = None) -> AsyncGenerator[bytes, None]:
         selected_voice = voice or "female"
-        if selected_voice not in self.available_voices:
+        # Allow direct Kokoro IDs like af_aoede/am_michael without forcing fallback
+        if (
+            selected_voice not in self.available_voices
+            and not str(selected_voice).startswith(("af_", "am_"))
+        ):
             selected_voice = "female"
 
         # Map API voice to Kokoro voice string (built-in or custom recipe)
@@ -281,6 +295,8 @@ class KokoroEngine:
             for piece in pieces:
                 # Kokoro v1 yields (gs, ps, audio) tuples; audio is np.ndarray float32
                 for _, _, audio in pipeline_for(piece):
+                    if request_id and self._cancel_flags.get(request_id, False):
+                        return
                     if audio is None:
                         continue
                     audio_arr = np.asarray(audio, dtype=np.float32).flatten()
@@ -328,6 +344,8 @@ class KokoroEngine:
         logger.warning("Requested format '%s' not available; falling back to PCM", output_format)
         for piece in pieces:
             for _, _, audio_np in pipeline_for(piece):
+                if request_id and self._cancel_flags.get(request_id, False):
+                    return
                 for pcm_bytes in self._iter_pcm16_chunks(audio_np):
                     yield pcm_bytes
 
@@ -375,6 +393,28 @@ class KokoroEngine:
         # back-of-envelope: one quantum per active slot before we start
         est_wait_ms = (q / max(1, self.active_limit)) * (1000.0 * self.stream_chunk_samples / float(SAMPLE_RATE))
         return (not self._job_queue.full()) and est_wait_ms < self.queue_wait_sla_ms
+
+    def register_request(self, request_id: Optional[str]) -> None:
+        if not request_id:
+            return
+        # initialize cancel flag as False
+        self._cancel_flags[request_id] = False
+
+    def cancel_request(self, request_id: Optional[str]) -> bool:
+        if not request_id:
+            return False
+        if request_id in self._cancel_flags:
+            self._cancel_flags[request_id] = True
+            return True
+        # If not registered yet, mark as canceled so future start short-circuits
+        self._cancel_flags[request_id] = True
+        return True
+
+    def clear_request(self, request_id: Optional[str]) -> None:
+        if not request_id:
+            return
+        with contextlib.suppress(Exception):
+            self._cancel_flags.pop(request_id, None)
 
     def validate_voice(self, voice: str) -> None:
         if voice not in self.available_voices:
@@ -453,7 +493,7 @@ class KokoroEngine:
         return [p for p in [first, rest] if p]
 
     async def generate_speech_async(
-        self, prompt: str, voice: str | None = None, output_format: str = "pcm", speed: Optional[float] = None
+        self, prompt: str, voice: str | None = None, output_format: str = "pcm", speed: Optional[float] = None, request_id: Optional[str] = None
     ) -> AsyncGenerator[bytes, None]:
         """
         Enqueue a synthesis job and stream encoded bytes (default PCM16 @ 24 kHz).
@@ -466,15 +506,19 @@ class KokoroEngine:
         pieces = self._segment_for_fast_ttfb(text)
         first = [pieces[0]] if pieces else []
         rest = pieces[1:] if len(pieces) > 1 else []
-        await self._pri_queue.put(_TTSJob(pieces=first, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=(len(rest)==0), priority=True, speed=speed))
+        # Register request for cancellation tracking
+        self.register_request(request_id)
+        await self._pri_queue.put(_TTSJob(pieces=first, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=(len(rest)==0), priority=True, speed=speed, request_id=request_id))
         if rest:
-            await self._job_queue.put(_TTSJob(pieces=rest, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=True, priority=False, speed=speed))
+            await self._job_queue.put(_TTSJob(pieces=rest, voice=voice or "female", output_format=output_format, out_queue=out_q, end_stream=True, priority=False, speed=speed, request_id=request_id))
 
         while True:
             chunk = await out_q.get()
             if chunk is None:
                 break
             yield chunk
+        # Clear cancellation entry at end
+        self.clear_request(request_id)
 
     def get_status(self) -> dict:
         """Return runtime status for diagnostics."""
@@ -519,5 +563,6 @@ class _TTSJob:
     end_stream: bool
     priority: bool
     speed: Optional[float] = None
+    request_id: Optional[str] = None
 
 

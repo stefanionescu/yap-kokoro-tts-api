@@ -18,7 +18,7 @@ import json
 import time
 import uuid
 import statistics as stats
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 import websockets
 
@@ -41,7 +41,6 @@ DEFAULT_TEXT = (
     "our species' remarkable journey spanning hundreds of thousands of years "
     "and continents."
 )
-
 
 def _metrics(total_bytes: int, t0: float, t_first: float, t_end: float) -> Dict[str, float]:
     ttfb_ms = (t_first - t0) * 1000.0
@@ -82,82 +81,77 @@ def summarize(title: str, results: List[Dict[str, float]]) -> None:
     print(f"Throughput KB/s | avg={stats.mean(kbps):.0f}")
 
 
-async def _ws_one(base_url: str, text: str, voice: str, req_id: int) -> Dict[str, float]:
-    """Send one request through a new WebSocket connection with detailed logging."""
+async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int) -> List[Dict[str, float]]:
+    """Open one WS and send multiple speak() calls sequentially to simulate Pipecat."""
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
-    seg_id = f"seg-{uuid.uuid4().hex[:8]}"
-    t_send = time.time()
-    t0 = None
-    total = 0
-    t_first = None
-    audio_chunks = 0
-    meta_messages = 0
-    
+    results: List[Dict[str, float]] = []
     async with websockets.connect(ws_url, max_size=None, compression=None) as ws:
         await ws.send(json.dumps({
-            "continue": True,
-            "segment_id": seg_id,
-            "input": text,
-            "voice": voice,
+            "type": "start",
+            "voice": voice_cycle[0],
             "format": "pcm",
+            "sample_rate": SAMPLE_RATE,
         }))
-        t0 = time.time()
-        
+        # Wait for started
         while True:
-            msg = await ws.recv()
-            if isinstance(msg, (bytes, bytearray)):
-                if t_first is None:
-                    t_first = time.time()
-                    print(f"    Req {req_id}: First audio chunk after {(t_first - t0) * 1000:.0f}ms")
-                total += len(msg)
-                audio_chunks += 1
-            else:
+            m = await ws.recv()
+            if not isinstance(m, (bytes, bytearray)):
+                try:
+                    d = json.loads(m)
+                except Exception:
+                    continue
+                if isinstance(d, dict) and d.get("type") == "started":
+                    break
+
+        for i in range(requests_count):
+            voice = voice_cycle[i % len(voice_cycle)]
+            request_id = f"req-{uuid.uuid4().hex[:8]}"
+            t_send = time.time()
+            t0 = None
+            t_first = None
+            total = 0
+            # emit speak
+            await ws.send(json.dumps({
+                "type": "speak",
+                "request_id": request_id,
+                "text": text,
+                "voice": voice,
+            }))
+            t0 = time.time()
+            while True:
+                msg = await ws.recv()
+                if isinstance(msg, (bytes, bytearray)):
+                    if t_first is None:
+                        t_first = time.time()
+                        print(f"    Worker {worker_id}: First chunk after {(t_first - t0) * 1000:.0f}ms")
+                    total += len(msg)
+                    continue
                 try:
                     data = json.loads(msg)
                 except Exception:
                     continue
-                
-                if isinstance(data, dict):
-                    msg_type = data.get("type")
-                    if msg_type == "start":
-                        print(f"    Req {req_id}: Received 'start' message after {(time.time() - t0) * 1000:.0f}ms")
-                    elif msg_type == "meta":
-                        meta_messages += 1
-                    elif msg_type == "end":
-                        print(f"    Req {req_id}: Received 'end' message after {(time.time() - t0) * 1000:.0f}ms")
-                        print(f"    Req {req_id}: Total: {audio_chunks} audio chunks, {meta_messages} meta messages")
-                        break
-        
-        t_end = time.time()
-        send_to_end = (t_end - t_send) * 1000
-        print(f"    Req {req_id}: Full request time (send→end): {send_to_end:.0f}ms")
-        
-        return _metrics(total, t0, t_first or t_end, t_end)
+                if isinstance(data, dict) and data.get("type") in ("done", "canceled") and data.get("request_id") == request_id:
+                    break
+            t_end = time.time()
+            results.append(_metrics(total, t0 or t_end, t_first or t_end, t_end))
+        # send stop
+        await ws.send(json.dumps({"type":"stop"}))
+    return results
 
 async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int) -> List[Dict[str, float]]:
-    """Run benchmark with proper concurrency using multiple WebSocket connections."""
-    sem = asyncio.Semaphore(concurrency)
+    """Run benchmark using persistent WS per worker; multiple speak() per connection."""
+    per_worker = max(1, (total_reqs + concurrency - 1) // concurrency)
+    workers = min(concurrency, total_reqs)
+    voice_cycle = ["female", "male"]
+    tasks = [asyncio.create_task(_ws_worker(base_url, text, voice_cycle, per_worker, i+1)) for i in range(workers)]
+    results_nested = await asyncio.gather(*tasks, return_exceptions=True)
     results: List[Dict[str, float]] = []
-    errors: List[str] = []
-
-    async def run_one(i: int) -> None:
-        voice = "female" if (i % 2 == 0) else "male"
-        print(f"\n  Request {i + 1}/{total_reqs} (voice={voice}, text_len={len(text)} chars)")
-        async with sem:
-            try:
-                r = await _ws_one(base_url, text, voice, i + 1)
-                results.append(r)
-                print(f"    Req {i + 1}: Result: TTFB={r['ttfb_ms']:.0f}ms, Wall={r['wall_s']:.2f}s, Audio={r['audio_s']:.1f}s, xRT={r['xrt']:.1f}x")
-            except Exception as e:
-                errors.append(f"Request {i + 1}: {str(e)}")
-
-    print(f"Starting {total_reqs} concurrent requests with max {concurrency} concurrent connections")
-    tasks = [asyncio.create_task(run_one(i)) for i in range(total_reqs)]
-    await asyncio.gather(*tasks)
-    
-    if errors:
-        print(f"WS errors: {len(errors)} (showing first 3): {errors[:3]}")
-    return results
+    for r in results_nested:
+        if isinstance(r, list):
+            results.extend(r)
+        else:
+            print(f"Worker error: {r}")
+    return results[:total_reqs]
 
 def main() -> None:
     ap = argparse.ArgumentParser()
@@ -179,7 +173,6 @@ def main() -> None:
     ws_res = asyncio.run(bench_ws(base_url, args.text, args.n, args.concurrency))
     summarize("WebSocket", ws_res)
     print(f"WebSocket elapsed: {time.time()-t0:.2f}s")
-
 
 if __name__ == "__main__":
     main()

@@ -10,12 +10,11 @@ from contextlib import asynccontextmanager
 import contextlib
 import logging
 import asyncio
+import json
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from starlette.websockets import WebSocketState
 
-from pydantic import BaseModel
-from typing import List, Optional
 import warnings
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -24,29 +23,12 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-class VoiceDetail(BaseModel):
-    name: str
-    description: str
-    language: str
-    gender: str
-    accent: str
-    preview_url: Optional[str] = None
-
-class VoicesResponse(BaseModel):
-    voices: List[VoiceDetail]
-    default: str
-    count: int
-    
 engine: KokoroEngine = None
-_keep_hot_task: asyncio.Task | None = None
-VOICE_DETAILS: List[VoiceDetail] = []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initializes the TTS engine on application startup."""
-    global engine, VOICE_DETAILS
-    
-    # Torch perf knobs (small but free throughput/latency wins)
+    """Initialize TTS engine on startup; WS-only service (no HTTP APIs)."""
+    global engine
     try:
         torch.set_float32_matmul_precision("high")
         if hasattr(torch.backends, "cuda"):
@@ -56,212 +38,230 @@ async def lifespan(app: FastAPI):
             torch.backends.cudnn.benchmark = True  # type: ignore[attr-defined]
     except Exception:
         pass
-    
-    # Initialize the engine
+
     engine = KokoroEngine(lang_code=os.getenv("LANG_CODE", "a"))
     engine.start_worker()
-    
-    # Log Kokoro settings instead
-    logger.info("Kokoro model initialized")
-    
-    # Define gender for the available voices
-    voice_genders = {
-        "female": "female",
-        "male": "male"
-    }
-
-    # Dynamically generate voice details from the loaded engine
-    VOICE_DETAILS = [
-        VoiceDetail(
-            name=voice,
-            description=f"A natural-sounding {voice_genders.get(voice, 'unknown')} voice.",
-            language="en",
-            gender=voice_genders.get(voice, "unknown"),
-            accent="american"
-        ) for voice in engine.available_voices
-    ]
-    
-    logger.info(f"TTS engine initialized with {len(VOICE_DETAILS)} voices: {', '.join([v.name for v in VOICE_DETAILS])}")
-
-    # No keep-hot task needed for Kokoro
+    logger.info("Kokoro model initialized; WS-only mode")
     yield
     logger.info("Shutting down TTS engine")
 
 app = FastAPI(lifespan=lifespan)
 
 
-
-
-
 @app.websocket("/v1/audio/speech/stream/ws")
 async def tts_stream_ws(websocket: WebSocket):
     await websocket.accept()
     logger.info("WebSocket connection open")
-    
-    # Admission control for WS
-    if not engine.can_accept():
-        await websocket.send_json({"type": "error", "code": "busy"})
-        await websocket.close(code=1013)  # Try again later
-        return
-    
-    try:
-        while True:
-            data = await websocket.receive_json()
 
-            if not data.get("continue", True):
-                logger.info("End of stream message received, closing connection.")
-                break
+    # Per-connection defaults and state
+    default_voice = os.getenv("DEFAULT_VOICE_FEMALE", "af_aoede")
+    out_format = "pcm"  # wire is raw PCM16 frames
+    want_timestamps = False
+    send_lock = asyncio.Lock()
+    job_queue: asyncio.Queue[dict] = asyncio.Queue()
+    canceled: set[str] = set()
+    active_request_id: str | None = None
+    closing = False
 
-            if not (input_text := data.get("input", "").strip()):
-                logger.info("Empty or whitespace-only input received, skipping audio generation.")
-                continue
+    async def send_json_safe(obj: dict) -> None:
+        try:
+            async with send_lock:
+                await websocket.send_json(obj)
+        except Exception:
+            pass
 
-            voice = data.get("voice", "female")
-            segment_id = data.get("segment_id", "no_segment_id")
-            speed = data.get("speed", 1.4)  # Default to server speed
-            
-            out_format = str(data.get("format", "pcm")).lower()
+    async def stream_one(job: dict) -> None:
+        nonlocal active_request_id
+        req_id: str = job.get("request_id")
+        text: str = job.get("text", "")
+        voice: str = job.get("voice") or default_voice
+        speed = job.get("speed")
+        if not text:
+            await send_json_safe({"type": "error", "code": "empty_text", "request_id": req_id})
+            return
+        if req_id in canceled:
+            await send_json_safe({"type": "canceled", "request_id": req_id})
+            return
 
-            start_time = time.perf_counter()
-            total_samples = 0
-            segment_index = 0
-            # Send start; break cleanly if client is already gone
-            try:
-                await websocket.send_json({"type": "start", "segment_id": segment_id})
-            except Exception:
-                break
+        active_request_id = req_id
+        await send_json_safe({"type": "started_speak", "request_id": req_id})
 
-            # WS primer (optional)
-            if os.getenv("PRIME_STREAM", "0") == "1":
-                with contextlib.suppress(Exception):
+        # Optional primer
+        if os.getenv("PRIME_STREAM", "0") == "1":
+            with contextlib.suppress(Exception):
+                async with send_lock:
                     await websocket.send_bytes(b"\0" * int(os.getenv("PRIME_BYTES", "512")))
 
-            if input_text:
-                logger.info(f"WebSocket: Generating audio for input: '{input_text[:50]}...' (length: {len(input_text)}) speed={speed}")
-                
-                # Clamp speed to safe range
-                safe_speed = max(0.5, min(2.0, float(speed))) if speed is not None else None
-                
-                audio_generator = engine.generate_speech_async(
-                    prompt=input_text,
-                    voice=voice,
-                    output_format=out_format,
-                    speed=safe_speed,
-                )
+        safe_speed = max(0.5, min(2.0, float(speed))) if speed is not None else None
+        start_time = time.perf_counter()
+        total_samples = 0
+        segment_index = 0
+        first_chunk = True
+        buf = bytearray()
+        chunks_since_flush = 0
 
-                # WS send controls
-                BUF_TARGET = int(os.getenv("WS_BUFFER_BYTES", "1024"))       # ~0.17s @ 24kHz mono PCM16
-                FLUSH_EVERY = int(os.getenv("WS_FLUSH_EVERY", "2"))          # or flush every N micro-chunks
-                SEND_TIMEOUT = float(os.getenv("WS_SEND_TIMEOUT", "3.0"))    # hard cap per send
-                LONG_SEND_LOG_MS = float(os.getenv("WS_LONG_SEND_LOG_MS", "250.0"))
+        # WS send controls
+        BUF_TARGET = int(os.getenv("WS_BUFFER_BYTES", "1024"))
+        FLUSH_EVERY = int(os.getenv("WS_FLUSH_EVERY", "2"))
+        SEND_TIMEOUT = float(os.getenv("WS_SEND_TIMEOUT", "3.0"))
+        LONG_SEND_LOG_MS = float(os.getenv("WS_LONG_SEND_LOG_MS", "250.0"))
 
-                buf = bytearray()
-                chunks_since_flush = 0
-                first_chunk = True
-                segment_index = 0
-                total_samples = 0
+        async def _flush() -> None:
+            nonlocal buf, chunks_since_flush, segment_index, total_samples, first_chunk
+            if not buf:
+                return
+            send_t0 = time.perf_counter()
+            try:
+                async with send_lock:
+                    await asyncio.wait_for(websocket.send_bytes(bytes(buf)), timeout=SEND_TIMEOUT)
+            except asyncio.TimeoutError:
+                logger.error("WebSocket: send_bytes timeout after %.2fs (buffer=%d bytes)", SEND_TIMEOUT, len(buf))
+                raise
+            finally:
+                send_ms = (time.perf_counter() - send_t0) * 1000.0
+                if send_ms > LONG_SEND_LOG_MS:
+                    logger.warning("WebSocket: slow send_bytes: %.1f ms (buffer=%d bytes)", send_ms, len(buf))
 
-                async def _flush():
-                    nonlocal buf, chunks_since_flush, segment_index, total_samples, first_chunk
-                    if not buf:
-                        return
-                    send_t0 = time.perf_counter()
-                    try:
-                        await asyncio.wait_for(websocket.send_bytes(bytes(buf)), timeout=SEND_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        logger.error("WebSocket: send_bytes timeout after %.2fs (buffer=%d bytes)", SEND_TIMEOUT, len(buf))
-                        raise
-                    finally:
-                        send_ms = (time.perf_counter() - send_t0) * 1000.0
-                        if send_ms > LONG_SEND_LOG_MS:
-                            logger.warning("WebSocket: slow send_bytes: %.1f ms (buffer=%d bytes)", send_ms, len(buf))
+            if first_chunk:
+                ttfb = time.perf_counter() - start_time
+                logger.info("WebSocket: TTFB %.1f ms for %s", ttfb * 1000.0, req_id)
+                first_chunk = False
 
-                    # First-chunk TTFB measured on first successful send
-                    if first_chunk:
-                        ttfb = time.perf_counter() - start_time
-                        logger.info("WebSocket: Time to first audio chunk (TTFB): %.2f ms", ttfb * 1000.0)
-                        first_chunk = False
+            total_samples += len(buf) // 2
+            buf.clear()
+            chunks_since_flush = 0
 
-                    total_samples += len(buf) // 2  # 2 bytes/sample (PCM16 mono)
-                    buf.clear()
-                    chunks_since_flush = 0
-
-                    # Lightweight progress message (every ~10 flushes by default)
-                    if (segment_index % 10) == 0:
-                        with contextlib.suppress(Exception):
-                            await websocket.send_json({
-                                "type": "meta",
-                                "segment": segment_index,
-                                "total_samples": total_samples,
-                            })
-                    segment_index += 1
-
-                try:
-                    async for chunk in audio_generator:
-                        buf.extend(chunk)
-                        chunks_since_flush += 1
-
-                        # First-chunk immediate flush to minimize TTFB
-                        if first_chunk and os.getenv("WS_FIRST_CHUNK_IMMEDIATE", "0") == "1" and len(buf) > 0:
-                            await _flush()
-                            continue
-
-                        # Flush on size or cadence
-                        if len(buf) >= BUF_TARGET or chunks_since_flush >= FLUSH_EVERY:
-                            await _flush()
-
-                    # Final flush
-                    if buf:
-                        await _flush()
-
-                except Exception as e:
-                    logger.exception("WebSocket: Error during audio generation/sending: %s", str(e))
-                    break
-            else:
-                logger.info("WebSocket: Empty or whitespace-only input received, skipping audio generation.")
-
-            # Send end marker; ignore errors if the client already closed
-            with contextlib.suppress(Exception):
-                await websocket.send_json({
-                    "type": "end",
-                    "segment_id": segment_id,
+            if (segment_index % 10) == 0:
+                await send_json_safe({
+                    "type": "meta",
+                    "request_id": req_id,
+                    "segment": segment_index,
                     "total_samples": total_samples,
-                    "duration_seconds": total_samples / 24000.0,
                 })
+            segment_index += 1
 
-            if not data.get("continue", True):
+        try:
+            agen = engine.generate_speech_async(
+                prompt=text,
+                voice=voice,
+                output_format=out_format,
+                speed=safe_speed,
+                request_id=req_id,
+            )
+
+            async for chunk in agen:
+                if req_id in canceled:
+                    break
+                buf.extend(chunk)
+                chunks_since_flush += 1
+                if first_chunk and os.getenv("WS_FIRST_CHUNK_IMMEDIATE", "0") == "1" and len(buf) > 0:
+                    await _flush()
+                    continue
+                if len(buf) >= BUF_TARGET or chunks_since_flush >= FLUSH_EVERY:
+                    await _flush()
+            if buf and req_id not in canceled:
+                await _flush()
+
+            if req_id in canceled:
+                await send_json_safe({"type": "canceled", "request_id": req_id})
+            else:
+                await send_json_safe({
+                    "type": "done",
+                    "request_id": req_id,
+                    "duration_s": total_samples / 24000.0,
+                })
+        except Exception as e:
+            logger.exception("WebSocket: error in stream_one(%s): %s", req_id, e)
+            await send_json_safe({"type": "error", "request_id": req_id, "code": "stream_error", "message": str(e)})
+        finally:
+            active_request_id = None
+
+    # Receiver loop: handles incoming control frames concurrently
+    async def receiver_loop() -> None:
+        nonlocal default_voice, out_format, want_timestamps, closing
+        while True:
+            raw = await websocket.receive()
+            if raw.get("type") == "websocket.disconnect":
+                raise WebSocketDisconnect()
+            if "text" in raw and raw["text"]:
+                try:
+                    data = json.loads(raw["text"])  # type: ignore[name-defined]
+                except Exception:
+                    await send_json_safe({"type": "error", "code": "bad_json"})
+                    continue
+            elif "bytes" in raw and raw["bytes"]:
+                await send_json_safe({"type": "error", "code": "unexpected_binary"})
+                continue
+            else:
+                continue
+
+            msg_type = data.get("type")
+            if msg_type == "start":
+                default_voice = data.get("voice") or default_voice
+                out_format = "pcm"
+                want_timestamps = bool(data.get("timestamps", False))
+                await send_json_safe({"type": "started", "voice": default_voice, "format": out_format, "timestamps": want_timestamps})
+            elif msg_type == "speak":
+                req_id = data.get("request_id") or f"req-{int(time.time()*1000)}"
+                if not engine.can_accept():
+                    await send_json_safe({"type": "queue", "request_id": req_id})
+                await job_queue.put({
+                    "request_id": req_id,
+                    "text": (data.get("text") or "").strip(),
+                    "voice": data.get("voice"),
+                    "speed": data.get("speed"),
+                })
+            elif msg_type == "cancel":
+                req_id = data.get("request_id")
+                if req_id:
+                    canceled.add(req_id)
+                    engine.cancel_request(req_id)
+            elif msg_type == "stop":
+                closing = True
                 break
+            else:
+                await send_json_safe({"type": "error", "code": "unknown_type", "got": msg_type})
+
+    try:
+        recv_task = asyncio.create_task(receiver_loop())
+        # Processor loop: serialize speaks per connection, preserve order
+        while True:
+            if closing and job_queue.empty():
+                break
+            if active_request_id is None:
+                try:
+                    job = await asyncio.wait_for(job_queue.get(), timeout=0.05)
+                except asyncio.TimeoutError:
+                    continue
+                if job.get("request_id") in canceled:
+                    await send_json_safe({"type": "canceled", "request_id": job.get("request_id")})
+                    job_queue.task_done()
+                    continue
+                await stream_one(job)
+                job_queue.task_done()
+            else:
+                await asyncio.sleep(0.005)
+
+        # Graceful shutdown: wait for receiver to finish or cancel it
+        with contextlib.suppress(Exception):
+            recv_task.cancel()
+            await recv_task
 
     except WebSocketDisconnect:
         logger.info("Client disconnected from websocket.")
     except Exception as e:
-        logger.error(f"An unexpected error occurred in the websocket endpoint: {e}")
+        logger.error(f"Unexpected error in websocket endpoint: {e}")
     finally:
         logger.info("Closing websocket connection.")
         with contextlib.suppress(Exception):
             if websocket.client_state == WebSocketState.CONNECTED:
                 await websocket.close()
 
-@app.get("/api/voices", response_model=VoicesResponse)
-async def get_voices():
-    """Get available voices with detailed information."""
-    default_voice = engine.available_voices[0] if engine and engine.available_voices else "female"
-    return {
-        "voices": VOICE_DETAILS,
-        "default": default_voice,
-        "count": len(VOICE_DETAILS)
-    }
-
-@app.get("/api/status")
-async def get_status():
-    try:
-        return engine.get_status() if engine else {"device": "unknown"}
-    except Exception:
-        return {"device": "error"}
 
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
+
 
 @app.get("/readyz")
 async def readyz():
@@ -269,11 +269,6 @@ async def readyz():
         st = engine.get_status() if engine else None
         if not st:
             raise RuntimeError("engine not initialized")
-        if st.get("device") is None:
-            raise RuntimeError("device unknown")
-        if st.get("ffmpeg_available") is False:
-            # Not fatal, but report in readiness payload
-            pass
         return {"ok": True, **st}
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))

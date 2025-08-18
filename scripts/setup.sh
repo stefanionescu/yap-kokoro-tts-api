@@ -26,7 +26,7 @@ pip install -r requirements.txt
 
 mkdir -p logs cache
 
-echo "Setting up environment variables..."
+echo "Setting up environment variables (WS-only, Pipecat-ready)..."
 echo ""
 
 cat > .env << EOL
@@ -43,12 +43,8 @@ STREAM_CHUNK_SECONDS=0.02
 FIRST_SEGMENT_MAX_WORDS=2
 FIRST_SEGMENT_BOUNDARIES=.,?!;:
 
-# Context parameters (not used by Kokoro, kept for API compat logging)
-NUM_CTX=8192
-NUM_PREDICT=49152
-
 # Stream priming to defeat proxy buffering (0=off, 1=on)
-PRIME_STREAM=0
+PRIME_STREAM=1
 PRIME_BYTES=512
  
 # Optional CUDA/throughput knobs
@@ -60,10 +56,10 @@ SCHED_QUANTUM_BYTES=4096
 PRIORITY_QUANTUM_BYTES=1024
 QUEUE_WAIT_SLA_MS=800
 
-# WebSocket send controls
+# WebSocket send controls (small buffers for fast TTFB)
 WS_FIRST_CHUNK_IMMEDIATE=1
-WS_BUFFER_BYTES=1024
-WS_FLUSH_EVERY=2
+WS_BUFFER_BYTES=960
+WS_FLUSH_EVERY=1
 WS_SEND_TIMEOUT=3.0
 WS_LONG_SEND_LOG_MS=250
 EOL

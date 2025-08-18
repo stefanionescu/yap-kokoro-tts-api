@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Warmup script for Kokoro TTS API.
+Warmup script for Kokoro TTS API over WebSocket only.
 Sends a couple of requests to warm up the model for optimal performance.
 """
-import requests
 import asyncio
 import websockets
 import json
@@ -47,44 +46,57 @@ def _format_metrics(tag: str, m: dict):
 
 async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool):
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
-    seg_id = f"seg-{uuid.uuid4().hex[:8]}"
+    request_id = f"req-{uuid.uuid4().hex[:8]}"
     t_first = None
     total = 0
     t0 = None
     audio_buf = bytearray() if save_audio else None
-    
+
     async with websockets.connect(ws_url, max_size=None, compression=None, ping_interval=20, ping_timeout=20) as ws:
         await ws.send(json.dumps({
-            "continue": True,
-            "segment_id": seg_id,
-            "input": text,
+            "type": "start",
             "voice": voice,
-            "format": "pcm"
+            "format": "pcm",
+            "sample_rate": SAMPLE_RATE,
+        }))
+        # Await started
+        while True:
+            m = await ws.recv()
+            if not isinstance(m, (bytes, bytearray)):
+                try:
+                    d = json.loads(m)
+                except Exception:
+                    continue
+                if isinstance(d, dict) and d.get("type") == "started":
+                    break
+
+        await ws.send(json.dumps({
+            "type": "speak",
+            "request_id": request_id,
+            "text": text,
+            "voice": voice,
         }))
         t0 = time.time()
 
-        # Receive until we get an end message
         while True:
             try:
                 msg = await asyncio.wait_for(ws.recv(), timeout=10)
             except asyncio.TimeoutError:
                 raise RuntimeError("WS timeout waiting for first message/chunk")
-                
+
             if isinstance(msg, (bytes, bytearray)):
                 if t_first is None:
                     t_first = time.time()
                 total += len(msg)
                 if audio_buf is not None:
                     audio_buf.extend(msg)
-            else:
-                try:
-                    data = json.loads(msg)
-                    if data.get("type") == "start":
-                        logger.info("[WS] got start")
-                    elif data.get("type") == "end":
-                        break
-                except Exception:
-                    continue
+                continue
+            try:
+                data = json.loads(msg)
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("type") in ("done", "canceled") and data.get("request_id") == request_id:
+                break
         t_end = time.time()
     metrics = _compute_metrics(total, t0, t_first or t_end, t_end)
     if save_audio and total > 0 and audio_buf is not None:
@@ -94,21 +106,36 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
             f.write(audio_buf)
     return metrics
 
+async def _ws_ready_check(base_url: str, voice: str) -> bool:
+    """Perform a WS handshake (start→started→stop) to validate readiness."""
+    ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws"
+    try:
+        async with websockets.connect(ws_url, max_size=None, compression=None, ping_interval=20, ping_timeout=20) as ws:
+            await ws.send(json.dumps({"type": "start", "voice": voice, "format": "pcm", "sample_rate": SAMPLE_RATE}))
+            # wait for started
+            while True:
+                m = await ws.recv()
+                if not isinstance(m, (bytes, bytearray)):
+                    try:
+                        d = json.loads(m)
+                    except Exception:
+                        continue
+                    if isinstance(d, dict) and d.get("type") == "started":
+                        break
+            await ws.send(json.dumps({"type": "stop"}))
+        return True
+    except Exception as e:
+        logger.error(f"WS readiness check failed: {e}")
+        return False
+
 def warmup_api(host="localhost", port=8000, save_audio=False):
-    """Send warmup requests to the API"""
+    """Send warmup requests to the API (WS-only)."""
     base_url = f"http://{host}:{port}"
     
-    # First check if API is up
-    try:
-        logger.info(f"Checking if API is available at {base_url}...")
-        response = requests.get(f"{base_url}/api/voices", timeout=5)
-        if response.status_code != 200:
-            logger.error(f"API returned status code {response.status_code}")
-            return False
-        voices = response.json()
-        logger.info(f"API is up. Available voices: {[v['name'] for v in voices['voices']]}")
-    except requests.RequestException as e:
-        logger.error(f"API is not available: {str(e)}")
+    # WS readiness
+    logger.info("Checking API readiness via WebSocket...")
+    ok = asyncio.run(_ws_ready_check(base_url, "female"))
+    if not ok:
         logger.info("Make sure the API server is running (./start.sh)")
         return False
 

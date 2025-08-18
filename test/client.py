@@ -84,7 +84,7 @@ def _is_runpod_proxy_host(host: str) -> bool:
 
 
 async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_path: str, out_format: str, use_tls: bool = False, speed: float = 1.4) -> int:
-    """Connect to WS, stream PCM, encode to chosen format via ffmpeg or write raw PCM."""
+    """Persistent WS: start → speak(text) → binary PCM → done. Save via ffmpeg or raw."""
     norm_host, tls_from_scheme = _sanitize_host_and_scheme(host)
     force_tls = use_tls or tls_from_scheme or _is_runpod_proxy_host(norm_host)
     if _is_runpod_proxy_host(norm_host):
@@ -95,7 +95,7 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
         # Only append port if it's not already present
         netloc = norm_host if ":" in norm_host else f"{norm_host}:{port}"
         ws_url = f"{scheme}://{netloc}/v1/audio/speech/stream/ws"
-    segment_id = f"seg-{uuid.uuid4().hex[:8]}"
+    request_id = f"req-{uuid.uuid4().hex[:8]}"
 
     proc: subprocess.Popen | None = None
     file_handle = None
@@ -113,14 +113,31 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
     
     print(f"Connecting to {ws_url} with speed={speed:.1f}x (tempo correction: {1.0/speed:.3f}x)")
 
-    # Avoid extra_headers; some builds mis-handle them
     async with websockets.connect(ws_url, max_size=None) as ws:
+        # Start session
         await ws.send(json.dumps({
-            "continue": True,
-            "segment_id": segment_id,
-            "input": text,
+            "type": "start",
             "voice": voice,
             "format": "pcm",
+            "sample_rate": SAMPLE_RATE,
+        }))
+        # Wait for started
+        while True:
+            m = await ws.recv()
+            if not isinstance(m, (bytes, bytearray)):
+                try:
+                    d = json.loads(m)
+                except Exception:
+                    continue
+                if isinstance(d, dict) and d.get("type") == "started":
+                    break
+
+        # Send speak request
+        await ws.send(json.dumps({
+            "type": "speak",
+            "request_id": request_id,
+            "text": text,
+            "voice": voice,
             "speed": speed,
         }))
 
@@ -135,13 +152,13 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
                     file_handle.write(msg)
                 elif proc and proc.stdin:
                     proc.stdin.write(msg)
-            else:
-                try:
-                    data = json.loads(msg)
-                except Exception:
-                    continue
-                if isinstance(data, dict) and data.get("type") == "end":
-                    break
+                continue
+            try:
+                data = json.loads(msg)
+            except Exception:
+                continue
+            if isinstance(data, dict) and data.get("type") in ("done", "canceled") and data.get("request_id") == request_id:
+                break
 
     if proc and proc.stdin:
         try:
