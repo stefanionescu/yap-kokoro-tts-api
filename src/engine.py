@@ -412,9 +412,12 @@ class KokoroEngine:
         max_total = max(0, self.active_limit) + max(0, self.max_queued_requests)
         if self._accepted_slots >= max_total:
             return False
-        # Estimate queued count including reserved but not yet enqueued
-        queued_est = max(0, self._accepted_slots - self._inflight_count) + self._pri_queue.qsize() + self._job_queue.qsize()
-        # Predict wait using EWMA of full job wall time per slot, not chunk time
+        # Always admit up to active_limit immediately (no queue wait)
+        if self._accepted_slots < self.active_limit:
+            self._accepted_slots += 1
+            return True
+        # Beyond active_limit → queued
+        queued_est = (self._accepted_slots - self.active_limit) + self._pri_queue.qsize() + self._job_queue.qsize()
         est_wait_ms = (queued_est / max(1, self.active_limit)) * max(1.0, self._ewma_wall_ms)
         if est_wait_ms >= self.queue_wait_sla_ms:
             return False

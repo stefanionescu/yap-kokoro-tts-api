@@ -184,7 +184,8 @@ async def tts_stream_ws(websocket: WebSocket):
                 audio_s = total_samples / 24000.0
                 rtf = wall_s / audio_s if audio_s > 0 else float("inf")
                 xrt = audio_s / wall_s if wall_s > 0 else 0.0
-                kbps = (total_samples / 1024.0) / wall_s if wall_s > 0 else 0.0
+                # PCM16 mono: 2 bytes per sample → convert samples→KB for throughput
+                kbps = ((total_samples * 2) / 1024.0) / wall_s if wall_s > 0 else 0.0
                 log_request_metrics({
                     "request_id": req_id,
                     "ttfb_ms": ttfb_ms,
