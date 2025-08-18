@@ -289,7 +289,13 @@ async def tts_stream_ws(websocket: WebSocket):
                         spd_val = max(0.5, min(2.0, spd_val))
 
                 # SLA-based admission control with small queue; reserve an accept slot up-front
-                if not engine.try_accept_request():
+                # Atomic reservation using dynamic SLA-aware cap
+                ok = False
+                try:
+                    ok = await engine.try_accept_request_async()  # type: ignore[attr-defined]
+                except AttributeError:
+                    ok = engine.try_accept_request()
+                if not ok:
                     await send_json_safe({"type": "error", "code": "busy", "request_id": req_id})
                     continue
                 await job_queue.put({

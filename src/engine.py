@@ -136,6 +136,8 @@ class KokoroEngine:
         self._accepted_slots: int = 0
         # EWMA of observed job wall time (ms) used for SLA estimation
         self._ewma_wall_ms: float = float(os.getenv("AVG_JOB_WALL_MS", str(DEFAULT_EWMA_WALL_MS)))
+        # Admission lock to make reservations atomic across connections
+        self._admission_lock: asyncio.Lock = asyncio.Lock()
         
         # Round-robin scheduling parameters
         self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", str(SCHED_DEFAULT_QUANTUM_BYTES))))
@@ -438,6 +440,27 @@ class KokoroEngine:
             return False
         self._accepted_slots += 1
         return True
+
+    async def try_accept_request_async(self) -> bool:
+        """Atomic reservation using a dynamic queue cap derived from SLA and EWMA.
+
+        Admits up to active_limit immediately, then allows only as many queued
+        reservations as fit within SLA based on current EWMA wall time.
+        """
+        async with self._admission_lock:
+            # Always admit up to active_limit immediately
+            if self._accepted_slots < self.active_limit:
+                self._accepted_slots += 1
+                return True
+            # Compute dynamic allowed queued under SLA
+            allowed_by_sla = int((self.queue_wait_sla_ms / max(1.0, self._ewma_wall_ms)) * self.active_limit)
+            allowed_by_sla = max(0, allowed_by_sla)
+            cap = min(self.max_queued_requests, allowed_by_sla)
+            max_total = self.active_limit + cap
+            if self._accepted_slots >= max_total:
+                return False
+            self._accepted_slots += 1
+            return True
 
     def release_accept_slot(self) -> None:
         self._accepted_slots = max(0, self._accepted_slots - 1)
