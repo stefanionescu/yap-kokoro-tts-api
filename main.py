@@ -118,7 +118,7 @@ async def tts_stream_ws(websocket: WebSocket):
         LONG_SEND_LOG_MS = float(os.getenv("WS_LONG_SEND_LOG_MS", "250.0"))
 
         async def _flush() -> None:
-            nonlocal buf, chunks_since_flush, segment_index, total_samples, first_chunk
+            nonlocal buf, chunks_since_flush, segment_index, total_samples, first_chunk, first_audio_at
             if not buf:
                 return
             send_t0 = time.perf_counter()
@@ -205,6 +205,9 @@ async def tts_stream_ws(websocket: WebSocket):
             await send_json_safe({"type": "error", "request_id": req_id, "code": "stream_error", "message": str(e)})
         finally:
             active_request_id = None
+            # Release accept slot whether completed or canceled/error
+            with contextlib.suppress(Exception):
+                engine.release_accept_slot()
 
     # Receiver loop: handles incoming control frames concurrently
     async def receiver_loop() -> None:
@@ -267,8 +270,10 @@ async def tts_stream_ws(websocket: WebSocket):
                     else:
                         spd_val = max(0.5, min(2.0, spd_val))
 
-                if not engine.can_accept():
-                    await send_json_safe({"type": "queue", "request_id": req_id})
+                # SLA-based admission control with small queue; reserve an accept slot up-front
+                if not engine.try_accept_request():
+                    await send_json_safe({"type": "error", "code": "busy", "request_id": req_id})
+                    continue
                 await job_queue.put({
                     "request_id": req_id,
                     "text": text_val,

@@ -13,6 +13,18 @@ bash scripts/tail_bg_logs.sh
 source venv/bin/activate && python test/warmup.py --save
 ```
 
+### Authentication (production)
+- The WebSocket endpoint requires an API key if `API_KEY` is set in `.env`.
+- `scripts/setup.sh` creates `.env` with a default `API_KEY=dev-key`.
+- For production, set a strong key:
+```bash
+sed -i 's/^API_KEY=.*/API_KEY=your-strong-key/' .env
+bash scripts/stop.sh || true
+bash scripts/start.sh
+```
+- Clients append the key as a query parameter, e.g. `wss://host/v1/audio/speech/stream/ws?api_key=your-strong-key`.
+- Our tools (`test/client.py`, `test/bench.py`, `test/warmup.py`) read `API_KEY` from `.env` automatically and include it.
+
 ### Protocol (WebSocket only)
 - Route: `/v1/audio/speech/stream/ws`
 - Messages:
@@ -74,26 +86,58 @@ bash scripts/stop.sh || true && bash scripts/start.sh
 # On the pod
 source venv/bin/activate
 # Try several conc values to find the sweet spot
-python test/bench.py --proto ws --n 60 --concurrency 1
-python test/bench.py --proto ws --n 60 --concurrency 2
-python test/bench.py --proto ws --n 60 --concurrency 3
-python test/bench.py --proto ws --n 60 --concurrency 4
+python test/bench.py --n 60 --concurrency 1
+python test/bench.py --n 60 --concurrency 2
+python test/bench.py --n 60 --concurrency 3
+python test/bench.py --n 60 --concurrency 4
 ```
 - Pick the highest concurrency where p95 TTFB is acceptable. Set it via `MAX_CONCURRENT_JOBS` (see below) and scale replicas for more QPS.
 
-### Config knobs (sane defaults set by setup.sh)
-- TTFB/streaming
-  - `FIRST_SEGMENT_MAX_WORDS` (default 2)
-  - `FIRST_SEGMENT_BOUNDARIES` (default `.,?!;:`)
-  - `STREAM_CHUNK_SECONDS` (default 0.02)
-  - `PRIME_STREAM=1`, `PRIME_BYTES=512`
-  - `WS_FIRST_CHUNK_IMMEDIATE=1`, `WS_BUFFER_BYTES=960`, `WS_FLUSH_EVERY=1`, `WS_SEND_TIMEOUT=3.0`
-- Concurrency/backpressure
-  - `MAX_CONCURRENT_JOBS` (default 4)
-  - `QUEUE_MAXSIZE` (default 128) – excess requests block in queue
-- GPU
-  - `KOKORO_DEVICE` (e.g., `cuda:0`)
-  - `KOKORO_GPU_MEMORY_FRACTION` (e.g., `0.95`) – soft cap; use MIG for hard isolation
+### Config knobs (what they do)
+- **Auth & logging**
+  - `API_KEY`: If set, the WS endpoint requires `?api_key=...`. Tools auto‑append from `.env`.
+  - `LOG_LEVEL`: Uvicorn/app log level (`DEBUG`, `INFO`, ...).
+
+- **Model & voices**
+  - `MODEL_NAME`: Hugging Face model id to load (e.g., `hexgrad/Kokoro-82M`).
+  - `DEFAULT_VOICE_FEMALE`, `DEFAULT_VOICE_MALE`: Kokoro voice ids (or custom voice names) used when the client passes `voice: "female"|"male"`.
+  - `LANG_CODE`: Model language variant; `a` is American English for Kokoro.
+  - `KOKORO_SPEED`: Default speech speed (0.5–2.0). Per‑request `speed` overrides it.
+  - `KOKORO_SPLIT_PATTERN`: Regex for sentence segmentation inside Kokoro (affects natural boundaries).
+
+- **Streaming/TTFB behavior**
+  - `FIRST_SEGMENT_MAX_WORDS`: Emit a tiny first piece (≤ N words) to minimize TTFB.
+  - `FIRST_SEGMENT_BOUNDARIES`: Punctuation considered a natural cut for the first piece.
+  - `FIRST_SEGMENT_REQUIRE_BOUNDARY`: If `1`, only cut on punctuation; otherwise fall back to a word cut.
+  - `STREAM_CHUNK_SECONDS`: Engine chunk size in seconds (PCM per chunk). `0.02` → 20 ms (@24 kHz ≈ 480 samples).
+  - `MAX_UTTERANCE_WORDS`: Reject a `speak` if text exceeds this word count (returns `too_long`).
+  - `PRIME_STREAM`: If `1`, send `PRIME_BYTES` all‑zero bytes once per speak to defeat proxy buffering (does not affect metrics).
+  - `PRIME_BYTES`: Size of the primer chunk when `PRIME_STREAM=1`.
+
+- **WebSocket send**
+  - `WS_FIRST_CHUNK_IMMEDIATE`: Flush immediately once some audio is ready to cut TTFB.
+  - `WS_BUFFER_BYTES`: Byte threshold to flush buffered PCM (typ. around the size of one engine chunk).
+  - `WS_FLUSH_EVERY`: Flush after N chunks regardless of buffer bytes.
+  - `WS_SEND_TIMEOUT`: Max seconds for a single `send_bytes` call.
+  - `WS_LONG_SEND_LOG_MS`: Log a warning when a `send_bytes` call exceeds this duration.
+
+- **Concurrency & admission control (API level)**
+  - `MAX_CONCURRENT_JOBS`: Max concurrent synth streams actively running (engine scheduler `active_limit`).
+  - `MAX_QUEUED_REQUESTS`: Max number of requests allowed to wait behind the running ones. Beyond this, the server replies `{code:"busy"}`.
+  - `QUEUE_WAIT_SLA_MS`: Estimated start‑wait SLA. If the predicted wait to start streaming exceeds this, the request is rejected with `{code:"busy"}`.
+  - `QUEUE_MAXSIZE`: Internal engine queue capacity (safety cap for `_TTSJob` objects). Not the public backlog; you usually won’t hit it.
+
+- **Scheduler fairness (engine)**
+  - `SCHED_QUANTUM_BYTES`: Bytes budget per scheduler turn for normal jobs (≈ how much PCM each stream emits before yielding).
+  - `PRIORITY_QUANTUM_BYTES`: Bytes budget for priority work (keeps first pieces snappy under light load).
+
+- **GPU device & memory**
+  - `KOKORO_DEVICE`: Target device (`cuda:0`, `cpu`, ...). If CUDA is available, the engine binds to that device.
+  - `KOKORO_GPU_MEMORY_FRACTION`: Soft cap for per‑process GPU memory (0.0–1.0).
+
+- **Encoding (optional Ogg/Opus when requested)**
+  - `OPUS_BITRATE`: Bitrate passed to ffmpeg when output format is `opus`.
+  - `OPUS_APPLICATION`: `audio` (default) or `voip` passed to the Opus encoder.
 
 ### Health & status
 - `/healthz` (200 OK), `/readyz` (engine + device)
@@ -110,6 +154,39 @@ source venv/bin/activate && python src/metrics.py
 # Custom windows
 python src/metrics.py --periods "30m,1h,6h,24h,3d"
 ```
+
+### Purge / reset the pod
+Use `scripts/purge_pod.sh` to stop the server and optionally clean runtime files.
+
+Common operations:
+```bash
+# Stop only the TTS server on the default port (safe; keeps files intact)
+bash scripts/purge_pod.sh --port 8000
+
+# Stop the server and clean in-repo runtime files (includes logs/metrics.log)
+bash scripts/purge_pod.sh --port 8000 --clean-files
+
+# Aggressive cleanup (implies --clean-files and adds extra cache purges)
+bash scripts/purge_pod.sh --port 8000 --aggressive
+
+# Optional extras (combine as needed)
+bash scripts/purge_pod.sh --port 8000 \
+  --drop-caches --clear-shm --clear-tmp --gpu-reset --kill-jupyter --kill-sessions
+
+# Remove system packages installed by setup.sh (ffmpeg/espeak/etc.) — irreversible in a live image
+bash scripts/purge_pod.sh --purge-system
+
+# Prune container cache (if a container engine is available in the environment)
+bash scripts/purge_pod.sh --docker-prune
+
+# Self-delete the pod via RunPod API (requires RUNPOD_API_KEY and RUNPOD_POD_ID)
+bash scripts/purge_pod.sh --self-remove
+```
+
+Notes:
+- `--clean-files` removes `venv/`, `cache/`, `logs/` (including `logs/metrics.log`), model caches, warmup audio, and process files. Use with care.
+- `--aggressive` implies `--clean-files` and additionally purges pip/apt caches and Torch extension caches.
+- We avoid wiping `/tmp` by default; pass `--clear-tmp` if you truly need it (may disrupt consoles).
 
 ### Notes
 - Voices come from Kokoro‑82M: see the official list (`af_aoede`, `am_michael`, etc.).

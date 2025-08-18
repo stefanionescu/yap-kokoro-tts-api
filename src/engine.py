@@ -120,13 +120,18 @@ class KokoroEngine:
         self._job_queue: asyncio.Queue["_TTSJob"] = asyncio.Queue(maxsize=queue_size)
         self.max_concurrent = int(os.getenv("MAX_CONCURRENT_JOBS", "4"))
         self._worker_tasks: list[asyncio.Task] = []
+        # Number of in-flight synthesis streams (process-wide)
+        self._inflight_count: int = 0
+        # Total accepted requests (running + queued/reserved at API)
+        self._accepted_slots: int = 0
         
         # Round-robin scheduling parameters
         self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", "4096")))
         self.active_limit = self.max_concurrent
         
         # Admission control
-        self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", "800"))
+        self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", "1000"))
+        self.max_queued_requests = int(os.getenv("MAX_QUEUED_REQUESTS", "4"))
 
         # Cancellation registry per request_id
         self._cancel_flags: dict[str, bool] = {}
@@ -390,10 +395,48 @@ class KokoroEngine:
 
     def can_accept(self) -> bool:
         """Check if we can accept a new request within SLA."""
+        # Allow queueing up to max_queued_requests beyond active_limit
         q = self._pri_queue.qsize() + self._job_queue.qsize()
-        # back-of-envelope: one quantum per active slot before we start
+        # Estimated start wait: queued per active slot × chunk time
         est_wait_ms = (q / max(1, self.active_limit)) * (1000.0 * self.stream_chunk_samples / float(SAMPLE_RATE))
-        return (not self._job_queue.full()) and est_wait_ms < self.queue_wait_sla_ms
+        within_sla = est_wait_ms < self.queue_wait_sla_ms
+        within_queue_cap = q < max(0, self.max_queued_requests)
+        return within_sla and within_queue_cap and (not self._job_queue.full())
+
+    def try_accept_request(self) -> bool:
+        """Reserve a slot (running or queued) if capacity and SLA permit.
+
+        Allows up to (active_limit + max_queued_requests) total accepted requests
+        and rejects if estimated start wait would exceed SLA.
+        """
+        # Capacity cap across running + queued
+        max_total = max(0, self.active_limit) + max(0, self.max_queued_requests)
+        if self._accepted_slots >= max_total:
+            return False
+        # Estimate queued count including reserved but not yet enqueued
+        queued_est = max(0, self._accepted_slots - self._inflight_count) + self._pri_queue.qsize() + self._job_queue.qsize()
+        est_wait_ms = (queued_est / max(1, self.active_limit)) * (1000.0 * self.stream_chunk_samples / float(SAMPLE_RATE))
+        if est_wait_ms >= self.queue_wait_sla_ms:
+            return False
+        self._accepted_slots += 1
+        return True
+
+    def release_accept_slot(self) -> None:
+        self._accepted_slots = max(0, self._accepted_slots - 1)
+
+    def try_reserve_slot(self) -> bool:
+        """Atomically reserve a concurrency slot if available.
+
+        Returns True on success. Caller must later call release_slot().
+        """
+        if self._inflight_count >= self.active_limit:
+            return False
+        self._inflight_count += 1
+        return True
+
+    def release_slot(self) -> None:
+        """Release a previously reserved concurrency slot."""
+        self._inflight_count = max(0, self._inflight_count - 1)
 
     def register_request(self, request_id: Optional[str]) -> None:
         if not request_id:
@@ -506,6 +549,8 @@ class KokoroEngine:
         """
         # Lazy-start worker if not running
         self.start_worker()
+        # Mark in-flight start
+        self._inflight_count += 1
 
         out_q: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=32)
         text = (prompt or "").strip()
@@ -524,13 +569,17 @@ class KokoroEngine:
             request_id=request_id,
         ))
 
-        while True:
-            chunk = await out_q.get()
-            if chunk is None:
-                break
-            yield chunk
-        # Clear cancellation entry at end
-        self.clear_request(request_id)
+        try:
+            while True:
+                chunk = await out_q.get()
+                if chunk is None:
+                    break
+                yield chunk
+        finally:
+            # Clear cancellation entry at end
+            self.clear_request(request_id)
+            # Mark in-flight end
+            self._inflight_count = max(0, self._inflight_count - 1)
 
     def get_status(self) -> dict:
         """Return runtime status for diagnostics."""
