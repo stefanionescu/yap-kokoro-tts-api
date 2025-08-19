@@ -64,12 +64,11 @@ class TPMWorker:
     """Sustained load worker that sends requests continuously until time expires."""
     
     def __init__(self, worker_id: int, ws_url: str, text: str, voice_cycle: List[str], 
-                 server_format: str, speed: float, duration_s: float):
+                 speed: float, duration_s: float):
         self.worker_id = worker_id
         self.ws_url = ws_url
         self.text = text
         self.voice_cycle = voice_cycle
-        self.server_format = server_format
         self.speed = speed
         self.duration_s = duration_s
         
@@ -91,7 +90,7 @@ class TPMWorker:
                 "type": "session.update",
                 "session": {
                     "voice": self.voice_cycle[0],
-                    "audio": {"format": self.server_format, "sample_rate": SAMPLE_RATE},
+                    "audio": {"format": "pcm", "sample_rate": SAMPLE_RATE},
                 },
             }))
             # Wait for session.updated
@@ -176,8 +175,7 @@ class TPMWorker:
             "ttfb_times": self.ttfb_times,
         }
 
-async def run_tpm_test(base_url: str, text: str, concurrency: int, server_format: str, 
-                      speed: float, duration_s: float) -> None:
+async def run_tpm_test(base_url: str, text: str, concurrency: int, speed: float, duration_s: float) -> None:
     """Run TPM test with specified concurrency for duration_s seconds."""
     api_key = os.getenv("API_KEY", "")
     qs = f"?api_key={api_key}" if api_key else ""
@@ -188,7 +186,6 @@ async def run_tpm_test(base_url: str, text: str, concurrency: int, server_format
     print(f"  Duration: {duration_s}s")
     print(f"  Concurrency: {concurrency}")
     print(f"  Text length: {len(text)} chars")
-    print(f"  Server format: {server_format}")
     print(f"  Speed: {speed}x")
     print(f"  URL: {ws_url}")
     print()
@@ -201,7 +198,6 @@ async def run_tpm_test(base_url: str, text: str, concurrency: int, server_format
             ws_url=ws_url,
             text=text,
             voice_cycle=voice_cycle,
-            server_format=server_format,
             speed=speed,
             duration_s=duration_s
         )
@@ -265,8 +261,6 @@ def main() -> None:
                        help="Concurrent requests (defaults to MAX_CONCURRENT_JOBS from .env)")
     parser.add_argument("--text", default=DEFAULT_TEXT, help="Input text to synthesize")
     parser.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
-    parser.add_argument("--server-format", choices=["pcm", "opus"], default="pcm", 
-                       help="Server audio format (pcm or opus)")
     parser.add_argument("--speed", type=float, default=1.0, 
                        help="Speech speed multiplier (0.5-2.0, default: 1.0)")
     
@@ -285,7 +279,6 @@ def main() -> None:
             base_url, 
             text_to_use, 
             args.concurrency, 
-            args.server_format, 
             args.speed, 
             args.duration
         ))

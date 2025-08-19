@@ -224,7 +224,6 @@ def main() -> None:
     ap.add_argument("--concurrency", type=int, default=12)
     ap.add_argument("--text", default=DEFAULT_TEXT)
     ap.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
-    ap.add_argument("--server-format", choices=["pcm", "opus"], default="pcm", help="Server audio format (pcm or opus)")
     ap.add_argument("--speed", type=float, default=1.0, help="Speech speed multiplier (0.5-2.0, default: 1.0)")
     args = ap.parse_args()
 
@@ -235,7 +234,7 @@ def main() -> None:
     print(f"Text preview: {text_to_use[:100]}...")
 
     t0 = time.time()
-    ws_res, rejected = asyncio.run(bench_ws(base_url, text_to_use, args.n, args.concurrency, args.server_format, args.speed))
+    ws_res, rejected = asyncio.run(bench_ws(base_url, text_to_use, args.n, args.concurrency, args.speed))
     summarize("WebSocket", ws_res)
     print(f"Rejected: {rejected}")
     print(f"WebSocket elapsed: {time.time()-t0:.2f}s")

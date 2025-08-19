@@ -1,6 +1,6 @@
-## Kokoro TTS Deployment (Pipecat‑ready)
+## Kokoro TTS Deployment (OpenAI Realtime‑compatible)
 
-FastAPI service around Kokoro‑82M with a persistent WebSocket protocol designed for low‑latency sentence‑level streaming and barge‑in. Output is 24 kHz mono PCM16.
+FastAPI service around Kokoro‑82M with a persistent WebSocket using an OpenAI Realtime‑compatible event schema for low‑latency sentence‑level streaming and barge‑in. Output is 24 kHz mono PCM16 (base64 in WS events).
 
 All parameters were optimized for an L40S.
 
@@ -25,19 +25,18 @@ bash scripts/start.sh
 - Clients append the key as a query parameter, e.g. `wss://host/v1/audio/speech/stream/ws?api_key=your-strong-key`.
 - Our tools (`test/client.py`, `test/bench.py`, `test/warmup.py`) read `API_KEY` from `.env` automatically and include it.
 
-### Protocol (WebSocket only)
+### Protocol (WebSocket only; OpenAI Realtime‑compatible)
 - Route: `/v1/audio/speech/stream/ws`
 - Messages:
   - Client → Server
-    - `{"type":"start", "voice":"female", "format":"pcm", "sample_rate":24000, "timestamps":false}`
-    - For each sentence: `{"type":"speak", "request_id":"uuid", "text":"Okay, let's go.", "voice":"female", "speed":1.0}`
-    - Barge‑in: `{"type":"cancel", "request_id":"uuid"}`
-    - End session: `{"type":"stop"}`
+    - `{"type":"session.update", "session": {"voice":"female", "audio": {"format":"pcm", "sample_rate":24000}}}`
+    - For each sentence: `{"type":"response.create", "response_id":"uuid", "input":"Okay, let's go.", "voice":"female", "speed":1.0}`
+    - Barge‑in: `{"type":"response.cancel", "response":"uuid"}`
+    - End session: `{"type":"session.end"}`
   - Server → Client
-    - `{"type":"started"}` then `{"type":"started_speak", "request_id":"uuid"}`
-    - Binary frames with 20–40 ms PCM16 chunks
-    - Periodic `{"type":"meta", "request_id":"uuid", ...}`
-    - Completion: `{"type":"done", "request_id":"uuid", "duration_s":0.62}` or `{"type":"canceled", ...}`
+    - `{"type":"session.updated"}` and `{"type":"response.created", "response":"uuid"}`
+    - Streaming audio: `{"type":"response.output_audio.delta", "response":"uuid", "delta":"<base64>", "mime_type":"audio/pcm;rate=24000"}`
+    - Completion: `{"type":"response.completed", "response":"uuid"}` or `{"type":"response.canceled", "response":"uuid"}`
 
 Notes:
 - One connection stays open for many sentences. Concurrency is handled inside the engine via a fair round‑robin scheduler.
@@ -54,11 +53,12 @@ By default, the client and tools read `RUNPOD_TCP_HOST` and `RUNPOD_TCP_PORT` fr
 
 ### Example WS session
 ```json
-{ "type": "start", "voice": "female", "format": "pcm", "sample_rate": 24000 }
-{ "type": "speak", "request_id": "uuid-1", "text": "Okay, let's go." }
-<binary PCM> ...
-{ "type": "done", "request_id": "uuid-1" }
-{ "type": "stop" }
+{ "type": "session.update", "session": {"voice": "female", "audio": {"format":"pcm", "sample_rate": 24000}} }
+{ "type": "response.create", "response_id": "uuid-1", "input": "Okay, let's go." }
+{ "type": "response.created", "response": "uuid-1" }
+{ "type": "response.output_audio.delta", "response": "uuid-1", "delta": "<base64>", "mime_type": "audio/pcm;rate=24000" }
+{ "type": "response.completed", "response": "uuid-1" }
+{ "type": "session.end" }
 ```
 
 ### Custom voices (on‑pod only)
@@ -110,7 +110,7 @@ python test/bench.py --n 60 --concurrency 4
   - `FIRST_SEGMENT_BOUNDARIES`: Punctuation considered a natural cut for the first piece.
   - `FIRST_SEGMENT_REQUIRE_BOUNDARY`: If `1`, only cut on punctuation; otherwise fall back to a word cut.
   - `STREAM_CHUNK_SECONDS`: Engine chunk size in seconds (PCM per chunk). `0.02` → 20 ms (@24 kHz ≈ 480 samples).
-  - `MAX_UTTERANCE_WORDS`: Reject a `speak` if text exceeds this word count (returns `too_long`).
+  - `MAX_UTTERANCE_WORDS`: Reject a `response.create` if text exceeds this word count (returns `response.error` with `code: "too_long"`).
   - `PRIME_STREAM`: If `1`, send `PRIME_BYTES` all‑zero bytes once per speak to defeat proxy buffering (does not affect metrics).
   - `PRIME_BYTES`: Size of the primer chunk when `PRIME_STREAM=1`.
 
@@ -118,8 +118,8 @@ python test/bench.py --n 60 --concurrency 4
   - `WS_FIRST_CHUNK_IMMEDIATE`: Flush immediately once some audio is ready to cut TTFB.
   - `WS_BUFFER_BYTES`: Byte threshold to flush buffered PCM (typ. around the size of one engine chunk).
   - `WS_FLUSH_EVERY`: Flush after N chunks regardless of buffer bytes.
-  - `WS_SEND_TIMEOUT`: Max seconds for a single `send_bytes` call.
-  - `WS_LONG_SEND_LOG_MS`: Log a warning when a `send_bytes` call exceeds this duration.
+  - `WS_SEND_TIMEOUT`: Max seconds for a single send operation.
+  - `WS_LONG_SEND_LOG_MS`: Log a warning when a send operation exceeds this duration.
 
 - **Concurrency & admission control (API level)**
   - `MAX_CONCURRENT_JOBS`: Max concurrent synth streams actively running (engine scheduler `active_limit`).
