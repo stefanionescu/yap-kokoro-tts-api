@@ -242,6 +242,9 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
         await ws.send(json.dumps({"type":"session.end"}))
     return {"results": results, "rejected": rejected}
 
+def _split_sentences(text: str) -> list[str]:
+    return split_sentences(text)
+
 def _split_counts(total: int, workers: int) -> List[int]:
     base = total // workers
     rem = total % workers

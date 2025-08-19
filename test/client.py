@@ -28,8 +28,6 @@ import uuid
 import shutil
 import subprocess
 from urllib.parse import urlsplit
-import re
-
 from dotenv import load_dotenv
 from utils import split_sentences
 
