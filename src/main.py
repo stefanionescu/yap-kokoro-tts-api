@@ -1,12 +1,12 @@
-from logger import setup_logger
+from src.logger import setup_logger
 setup_logger()
 
 import time
 import uuid as _uuid
 import os
-from engine import KokoroEngine
-from utils import split_sentences as _split_sentences
-from constants import (
+from src.engine import KokoroEngine
+from src.utils import split_sentences as _split_sentences
+from src.constants import (
     SAMPLE_RATE,
     WS_DEFAULT_BUFFER_BYTES,
     WS_DEFAULT_FLUSH_EVERY,
@@ -20,7 +20,7 @@ from constants import (
     JOB_QUEUE_GET_TIMEOUT_S,
     PROCESSOR_LOOP_SLEEP_S,
 )
-from metrics import log_request_metrics
+from src.metrics import log_request_metrics
 import torch
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
