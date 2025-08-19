@@ -21,7 +21,7 @@ import statistics as stats
 from typing import Dict, List
 
 import websockets
-import re
+from utils import split_sentences
 import os
 from dotenv import load_dotenv
 
@@ -103,18 +103,7 @@ def _is_primer_chunk(b: bytes) -> bool:
 
 
 def _split_sentences(text: str) -> list[str]:
-    if not isinstance(text, str) or not text.strip():
-        return []
-    pattern = re.compile(r"(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St)\.)[.!?]\s+")
-    parts = []
-    start = 0
-    for m in pattern.finditer(text):
-        parts.append(text[start:m.end()].strip())
-        start = m.end()
-    tail = text[start:].strip()
-    if tail:
-        parts.append(tail)
-    return [p for p in parts if p]
+    return split_sentences(text)
 
 async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int, speed: float, mode: str) -> dict:
     """OpenAI Realtime WS: session.update once, then multiple response.create sequentially.

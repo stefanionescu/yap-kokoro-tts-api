@@ -12,8 +12,8 @@ import time
 import os
 import logging
 import argparse
-import re
 from dotenv import load_dotenv
+from utils import split_sentences
 
 # Setup logging
 logging.basicConfig(
@@ -65,18 +65,7 @@ def _is_primer_chunk(b: bytes) -> bool:
     return len(b) <= prime_bytes and not any(b)
 
 def _split_sentences(text: str) -> list[str]:
-    if not isinstance(text, str) or not text.strip():
-        return []
-    pattern = re.compile(r"(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St)\.)[.!?]\s+")
-    parts = []
-    start = 0
-    for m in pattern.finditer(text):
-        parts.append(text[start:m.end()].strip())
-        start = m.end()
-    tail = text[start:].strip()
-    if tail:
-        parts.append(tail)
-    return [p for p in parts if p]
+    return split_sentences(text)
 
 async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool, speed: float = 1.0, mode: str = "single"):
     api_key = os.getenv("API_KEY", "")

@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 import re
 
 from dotenv import load_dotenv
+from utils import split_sentences
 
 import websockets
 
@@ -122,19 +123,7 @@ def _is_runpod_proxy_host(host: str) -> bool:
 
 
 def _split_sentences(text: str) -> list[str]:
-    if not isinstance(text, str) or not text.strip():
-        return []
-    # Simple sentence splitter
-    pattern = re.compile(r"(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St)\.)[.!?]\s+")
-    parts = []
-    start = 0
-    for m in pattern.finditer(text):
-        parts.append(text[start:m.end()].strip())
-        start = m.end()
-    tail = text[start:].strip()
-    if tail:
-        parts.append(tail)
-    return [p for p in parts if p]
+    return split_sentences(text)
 
 async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_path: str, out_format: str, use_tls: bool = False, speed: float = 1.4, mode: str = "single") -> int:
     """OpenAI Realtime WS: session.update → response.create → response.output_audio.delta (b64) → response.completed.

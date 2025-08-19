@@ -24,7 +24,7 @@ import os
 from dotenv import load_dotenv
 
 import websockets
-import re
+from utils import split_sentences
 
 # Load .env to get MAX_CONCURRENT_JOBS and other defaults
 load_dotenv(override=True)
@@ -64,18 +64,7 @@ def _is_primer_chunk(b: bytes) -> bool:
     return len(b) <= prime_bytes and not any(b)
 
 def _split_sentences(text: str) -> list[str]:
-    if not isinstance(text, str) or not text.strip():
-        return []
-    pattern = re.compile(r"(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St)\.)[.!?]\s+")
-    parts = []
-    start = 0
-    for m in pattern.finditer(text):
-        parts.append(text[start:m.end()].strip())
-        start = m.end()
-    tail = text[start:].strip()
-    if tail:
-        parts.append(tail)
-    return [p for p in parts if p]
+    return split_sentences(text)
 
 class TPMWorker:
     """Sustained load worker that sends requests continuously until time expires."""
