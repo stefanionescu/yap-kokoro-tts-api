@@ -121,7 +121,10 @@ def _is_runpod_proxy_host(host: str) -> bool:
 
 
 async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_path: str, out_format: str, use_tls: bool = False, speed: float = 1.4) -> int:
-    """Persistent WS: start → speak(text) → binary PCM → done. Save via ffmpeg or raw."""
+    """OpenAI Realtime WS: session.update → response.create → response.output_audio.delta (b64) → response.completed.
+
+    Decodes base64 PCM deltas and saves via ffmpeg (wav/ogg/mp3) or raw PCM.
+    """
     norm_host, tls_from_scheme = _sanitize_host_and_scheme(host)
     force_tls = use_tls or tls_from_scheme or _is_runpod_proxy_host(norm_host)
     api_key = os.getenv("API_KEY", "")
@@ -153,53 +156,63 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
     print(f"Connecting to {ws_url} with speed={speed:.1f}x (tempo correction: {1.0/speed:.3f}x)")
 
     async with websockets.connect(ws_url, max_size=None) as ws:
-        # Start session
+        # OpenAI session.update
         await ws.send(json.dumps({
-            "type": "start",
-            "voice": voice,
-            "format": "pcm",
-            "sample_rate": SAMPLE_RATE,
+            "type": "session.update",
+            "session": {
+                "voice": voice,
+                "audio": {"format": "pcm", "sample_rate": SAMPLE_RATE},
+            },
         }))
-        # Wait for started
+        # Wait for session.updated
         while True:
             m = await ws.recv()
-            if not isinstance(m, (bytes, bytearray)):
-                try:
-                    d = json.loads(m)
-                except Exception:
-                    continue
-                if isinstance(d, dict) and d.get("type") == "started":
-                    break
+            try:
+                d = json.loads(m)
+            except Exception:
+                continue
+            if isinstance(d, dict) and d.get("type") == "session.updated":
+                break
 
-        # Send speak request
+        # Create response
         await ws.send(json.dumps({
-            "type": "speak",
-            "request_id": request_id,
-            "text": text,
+            "type": "response.create",
+            "response_id": request_id,
+            "input": text,
             "voice": voice,
             "speed": speed,
         }))
 
         while True:
             msg = await ws.recv()
-            if isinstance(msg, (bytes, bytearray)):
-                # Ignore primer (all-zero) chunks for TTFB and output
-                if first and _is_primer_chunk(msg):
-                    continue
-                if first:
-                    print(f"TTFB: {1000*(time.time()-t0):.0f}ms")
-                    first = False
-                total += len(msg)
-                if file_handle is not None:
-                    file_handle.write(msg)
-                elif proc and proc.stdin:
-                    proc.stdin.write(msg)
-                continue
             try:
                 data = json.loads(msg)
             except Exception:
                 continue
-            if isinstance(data, dict) and data.get("type") in ("done", "canceled") and data.get("request_id") == request_id:
+            if not isinstance(data, dict):
+                continue
+            msg_type = data.get("type")
+            # Stream audio deltas
+            if msg_type == "response.output_audio.delta" and data.get("response") == request_id:
+                b64 = data.get("delta") or ""
+                try:
+                    import base64 as _b64
+                    chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                except Exception:
+                    chunk = b""
+                if first and _is_primer_chunk(chunk):
+                    continue
+                if first:
+                    print(f"TTFB: {1000*(time.time()-t0):.0f}ms")
+                    first = False
+                total += len(chunk)
+                if file_handle is not None:
+                    file_handle.write(chunk)
+                elif proc and proc.stdin:
+                    proc.stdin.write(chunk)
+                continue
+            # Completion
+            if msg_type in ("response.completed", "response.canceled") and data.get("response") == request_id:
                 break
 
     if proc and proc.stdin:

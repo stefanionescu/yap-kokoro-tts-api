@@ -26,6 +26,7 @@ import contextlib
 import logging
 import asyncio
 import json
+import base64
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from starlette.websockets import WebSocketState
@@ -104,14 +105,19 @@ async def tts_stream_ws(websocket: WebSocket):
         else:
             raise ValueError(f"Voice '{requested}' not found")
     out_format = "pcm"  # wire is raw PCM16 frames
-    want_timestamps = False
+    # timestamps not used in OpenAI mode
     send_lock = asyncio.Lock()
     job_queue: asyncio.Queue[dict] = asyncio.Queue()
     canceled: set[str] = set()
     active_request_id: str | None = None
     closing = False
     max_utterance_words = int(os.getenv("MAX_UTTERANCE_WORDS", str(MAX_UTTERANCE_WORDS_DEFAULT)))
-    # Heartbeat disabled
+
+    oa_session = {
+        "voice": default_voice,
+        "audio_format": "pcm",
+        "sample_rate": SAMPLE_RATE,
+    }
 
     async def send_json_safe(obj: dict) -> None:
         try:
@@ -126,28 +132,38 @@ async def tts_stream_ws(websocket: WebSocket):
         text: str = job.get("text", "")
         voice: str = job.get("voice") or default_voice
         speed = job.get("speed")
+        response_id: str | None = job.get("response_id") if isinstance(job.get("response_id"), str) else None
         if not text:
-            await send_json_safe({"type": "error", "code": "empty_text", "request_id": req_id})
+            await send_json_safe({"type": "response.error", "response": response_id or req_id, "code": "empty_text"})
             return
         if req_id in canceled:
-            await send_json_safe({"type": "canceled", "request_id": req_id})
+            await send_json_safe({"type": "response.canceled", "response": response_id or req_id})
             return
 
         # Resolve voice before starting synthesis
         try:
             resolved_voice = resolve_voice(voice or default_voice)
         except ValueError as e:
-            await send_json_safe({"type": "error", "code": "invalid_voice", "request_id": req_id, "message": str(e)})
+            await send_json_safe({"type": "response.error", "response": response_id or req_id, "code": "invalid_voice", "message": str(e)})
             return
 
         active_request_id = req_id
-        await send_json_safe({"type": "started_speak", "request_id": req_id})
+        await send_json_safe({
+            "type": "response.created",
+            "response": response_id or req_id,
+        })
 
-        # Optional primer
+        # Optional primer (as base64 audio delta)
         if os.getenv("PRIME_STREAM", str(PRIME_STREAM_DEFAULT)) == "1":
             with contextlib.suppress(Exception):
-                async with send_lock:
-                    await websocket.send_bytes(b"\0" * int(os.getenv("PRIME_BYTES", str(PRIME_BYTES_DEFAULT))))
+                prime_len = int(os.getenv("PRIME_BYTES", str(PRIME_BYTES_DEFAULT)))
+                delta_b64 = base64.b64encode(b"\0" * prime_len).decode("ascii")
+                await send_json_safe({
+                    "type": "response.output_audio.delta",
+                    "response": response_id or req_id,
+                    "delta": delta_b64,
+                    "mime_type": f"audio/pcm;rate={SAMPLE_RATE}",
+                })
 
         safe_speed = max(SPEED_MIN, min(SPEED_MAX, float(speed))) if speed is not None else None
         start_time = time.perf_counter()
@@ -170,15 +186,19 @@ async def tts_stream_ws(websocket: WebSocket):
                 return
             send_t0 = time.perf_counter()
             try:
+                b64 = base64.b64encode(bytes(buf)).decode("ascii")
+                event = {
+                    "type": "response.output_audio.delta",
+                    "response": response_id or req_id,
+                    "delta": b64,
+                    "mime_type": f"audio/pcm;rate={SAMPLE_RATE}",
+                }
                 async with send_lock:
-                    await asyncio.wait_for(websocket.send_bytes(bytes(buf)), timeout=SEND_TIMEOUT)
-            except asyncio.TimeoutError:
-                logger.error("WebSocket: send_bytes timeout after %.2fs (buffer=%d bytes)", SEND_TIMEOUT, len(buf))
-                raise
+                    await asyncio.wait_for(websocket.send_json(event), timeout=SEND_TIMEOUT)
             finally:
                 send_ms = (time.perf_counter() - send_t0) * 1000.0
                 if send_ms > LONG_SEND_LOG_MS:
-                    logger.warning("WebSocket: slow send_bytes: %.1f ms (buffer=%d bytes)", send_ms, len(buf))
+                    logger.warning("WebSocket: slow send: %.1f ms (buffer=%d bytes)", send_ms, len(buf))
 
             if first_chunk:
                 ttfb = time.perf_counter() - start_time
@@ -190,13 +210,7 @@ async def tts_stream_ws(websocket: WebSocket):
             buf.clear()
             chunks_since_flush = 0
 
-            if (segment_index % 10) == 0:
-                await send_json_safe({
-                    "type": "meta",
-                    "request_id": req_id,
-                    "segment": segment_index,
-                    "total_samples": total_samples,
-                })
+            # no meta events in OpenAI mode
             segment_index += 1
 
         try:
@@ -222,7 +236,7 @@ async def tts_stream_ws(websocket: WebSocket):
                 await _flush()
 
             if req_id in canceled:
-                await send_json_safe({"type": "canceled", "request_id": req_id})
+                await send_json_safe({"type": "response.canceled", "response": response_id or req_id})
             else:
                 # Compute simple per-request metrics and log via engine
                 t_end = time.perf_counter()
@@ -247,13 +261,14 @@ async def tts_stream_ws(websocket: WebSocket):
                 with contextlib.suppress(Exception):
                     engine.record_job_wall_ms(wall_s * 1000.0)
                 await send_json_safe({
-                    "type": "done",
-                    "request_id": req_id,
-                    "duration_s": total_samples / 24000.0,
+                    "type": "response.completed",
+                    "response": response_id or req_id,
+                    "duration_s": total_samples / float(SAMPLE_RATE),
+                    "total_samples": total_samples,
                 })
         except Exception as e:
             logger.exception("WebSocket: error in stream_one(%s): %s", req_id, e)
-            await send_json_safe({"type": "error", "request_id": req_id, "code": "stream_error", "message": str(e)})
+            await send_json_safe({"type": "response.error", "response": response_id or req_id, "code": "stream_error", "message": str(e)})
         finally:
             active_request_id = None
             # Release accept slot whether completed or canceled/error
@@ -262,7 +277,7 @@ async def tts_stream_ws(websocket: WebSocket):
 
     # Receiver loop: handles incoming control frames concurrently
     async def receiver_loop() -> None:
-        nonlocal default_voice, out_format, want_timestamps, closing
+        nonlocal default_voice, out_format, closing
         while True:
             raw = await websocket.receive()
             if raw.get("type") == "websocket.disconnect":
@@ -271,89 +286,103 @@ async def tts_stream_ws(websocket: WebSocket):
                 try:
                     data = json.loads(raw["text"])  # type: ignore[name-defined]
                 except Exception:
-                    await send_json_safe({"type": "error", "code": "bad_json"})
+                    await send_json_safe({"type": "response.error", "code": "bad_json"})
                     continue
             elif "bytes" in raw and raw["bytes"]:
-                await send_json_safe({"type": "error", "code": "unexpected_binary"})
+                await send_json_safe({"type": "response.error", "code": "unexpected_binary"})
                 continue
             else:
                 continue
 
             msg_type = data.get("type")
-            if msg_type == "start":
-                v = (data.get("voice") or "").strip()
-                if v:
+            # OpenAI-only protocol
+            if True:
+                if msg_type == "session.update":
+                    sess = data.get("session", {}) if isinstance(data.get("session"), dict) else {}
+                    v_top = data.get("voice")
+                    v_sess = sess.get("voice") if isinstance(sess, dict) else None
+                    a_top = data.get("audio") or {}
+                    a_sess = sess.get("audio") if isinstance(sess, dict) else {}
+                    voice_val = (v_top or v_sess or default_voice) or "female"
+                    fmt_val = (a_top.get("format") if isinstance(a_top, dict) else None) or (a_sess.get("format") if isinstance(a_sess, dict) else None) or "pcm"
+                    sr_val = (a_top.get("sample_rate") if isinstance(a_top, dict) else None) or (a_sess.get("sample_rate") if isinstance(a_sess, dict) else None) or SAMPLE_RATE
                     try:
-                        resolve_voice(v)  # validate it exists
-                        default_voice = v  # store raw for later resolution
+                        resolve_voice(voice_val)
+                        default_voice = voice_val
                     except ValueError:
-                        await send_json_safe({"type": "error", "code": "invalid_voice", "voice": v})
+                        await send_json_safe({"type": "response.error", "code": "invalid_voice", "message": str(voice_val)})
                         continue
-                out_format = "pcm"
-                want_timestamps = bool(data.get("timestamps", False))
-                await send_json_safe({"type": "started", "voice": default_voice, "format": out_format, "timestamps": want_timestamps})
-            elif msg_type == "speak":
-                req_id = data.get("request_id") or f"req-{int(time.time()*1000)}"
-                # Validate text
-                text_val = data.get("text")
-                if not isinstance(text_val, str):
-                    await send_json_safe({"type": "error", "code": "bad_text", "request_id": req_id})
-                    continue
-                text_val = text_val.strip()
-                if not text_val:
-                    await send_json_safe({"type": "error", "code": "empty_text", "request_id": req_id})
-                    continue
-                # Word cap
-                try:
-                    word_count = len(text_val.split())
-                except Exception:
-                    word_count = 0
-                if max_utterance_words > 0 and word_count > max_utterance_words:
+                    out_format = "pcm"
+                    oa_session["voice"] = default_voice
+                    oa_session["audio_format"] = out_format
+                    oa_session["sample_rate"] = int(sr_val) if isinstance(sr_val, (int, float)) else SAMPLE_RATE
                     await send_json_safe({
-                        "type": "error",
-                        "code": "too_long",
-                        "request_id": req_id,
-                        "max_words": max_utterance_words,
-                        "got_words": word_count,
+                        "type": "session.updated",
+                        "session": {
+                            "voice": default_voice,
+                            "audio": {"format": out_format, "sample_rate": oa_session["sample_rate"]},
+                        },
                     })
-                    continue
-                # Speed bound and sanitize
-                spd_raw = data.get("speed")
-                spd_val = None
-                if spd_raw is not None:
+                elif msg_type == "response.create":
+                    req_id = data.get("response_id") or data.get("id") or f"req-{int(time.time()*1000)}"
+                    input_text = data.get("input") or data.get("text") or data.get("instructions")
+                    if not isinstance(input_text, str):
+                        await send_json_safe({"type": "response.error", "response": req_id, "code": "bad_text"})
+                        continue
+                    input_text = input_text.strip()
+                    if not input_text:
+                        await send_json_safe({"type": "response.error", "response": req_id, "code": "empty_text"})
+                        continue
+                    audio_cfg = data.get("audio") or {}
+                    voice_override = data.get("voice") or (audio_cfg.get("voice") if isinstance(audio_cfg, dict) else None)
+                    speed_raw = data.get("speed") or (audio_cfg.get("speed") if isinstance(audio_cfg, dict) else None)
+                    spd_val = None
+                    if speed_raw is not None:
+                        try:
+                            spd_val = float(speed_raw)
+                        except Exception:
+                            spd_val = None
+                        else:
+                            spd_val = max(0.5, min(2.0, spd_val))
+                    # Word cap
                     try:
-                        spd_val = float(spd_raw)
+                        word_count = len(input_text.split())
                     except Exception:
-                        spd_val = None
-                    else:
-                        spd_val = max(0.5, min(2.0, spd_val))
-
-                # SLA-based admission control with small queue; reserve an accept slot up-front
-                # Atomic reservation using dynamic SLA-aware cap
-                ok = False
-                try:
-                    ok = await engine.try_accept_request_async()  # type: ignore[attr-defined]
-                except AttributeError:
-                    ok = engine.try_accept_request()
-                if not ok:
-                    await send_json_safe({"type": "error", "code": "busy", "request_id": req_id})
-                    continue
-                await job_queue.put({
-                    "request_id": req_id,
-                    "text": text_val,
-                    "voice": data.get("voice"),
-                    "speed": spd_val,
-                })
-            elif msg_type == "cancel":
-                req_id = data.get("request_id")
-                if req_id:
-                    canceled.add(req_id)
-                    engine.cancel_request(req_id)
-            elif msg_type == "stop":
-                closing = True
-                break
-            else:
-                await send_json_safe({"type": "error", "code": "unknown_type", "got": msg_type})
+                        word_count = 0
+                    if max_utterance_words > 0 and word_count > max_utterance_words:
+                        await send_json_safe({
+                            "type": "response.error",
+                            "response": req_id,
+                            "code": "too_long",
+                            "max_words": max_utterance_words,
+                            "got_words": word_count,
+                        })
+                        continue
+                    ok = False
+                    try:
+                        ok = await engine.try_accept_request_async()  # type: ignore[attr-defined]
+                    except AttributeError:
+                        ok = engine.try_accept_request()
+                    if not ok:
+                        await send_json_safe({"type": "response.error", "response": req_id, "code": "busy"})
+                        continue
+                    await job_queue.put({
+                        "request_id": req_id,
+                        "response_id": req_id,
+                        "text": input_text,
+                        "voice": voice_override or default_voice,
+                        "speed": spd_val,
+                    })
+                elif msg_type == "response.cancel":
+                    resp = data.get("response") or data.get("response_id")
+                    if resp:
+                        canceled.add(resp)
+                        engine.cancel_request(str(resp))
+                elif msg_type in ("stop", "session.end"):
+                    closing = True
+                    break
+                else:
+                    await send_json_safe({"type": "response.error", "code": "unknown_type", "got": msg_type})
 
     try:
         recv_task = asyncio.create_task(receiver_loop())
@@ -367,7 +396,7 @@ async def tts_stream_ws(websocket: WebSocket):
                 except asyncio.TimeoutError:
                     continue
                 if job.get("request_id") in canceled:
-                    await send_json_safe({"type": "canceled", "request_id": job.get("request_id")})
+                    await send_json_safe({"type": "response.canceled", "response": job.get("request_id")})
                     job_queue.task_done()
                     continue
                 await stream_one(job)

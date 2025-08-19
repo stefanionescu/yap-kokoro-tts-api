@@ -102,7 +102,7 @@ def _is_primer_chunk(b: bytes) -> bool:
 
 
 async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int, server_format: str, speed: float) -> dict:
-    """Open one WS and send multiple speak() calls sequentially to simulate Pipecat.
+    """OpenAI Realtime WS: session.update once, then multiple response.create sequentially.
 
     Returns {"results": List[metrics], "rejected": int}
     """
@@ -113,21 +113,21 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
     rejected = 0
     async with websockets.connect(ws_url, max_size=None, compression=None) as ws:
         await ws.send(json.dumps({
-            "type": "start",
-            "voice": voice_cycle[0],
-            "format": server_format,
-            "sample_rate": SAMPLE_RATE,
+            "type": "session.update",
+            "session": {
+                "voice": voice_cycle[0],
+                "audio": {"format": server_format, "sample_rate": SAMPLE_RATE},
+            },
         }))
-        # Wait for started
+        # Wait for session.updated
         while True:
             m = await ws.recv()
-            if not isinstance(m, (bytes, bytearray)):
-                try:
-                    d = json.loads(m)
-                except Exception:
-                    continue
-                if isinstance(d, dict) and d.get("type") == "started":
-                    break
+            try:
+                d = json.loads(m)
+            except Exception:
+                continue
+            if isinstance(d, dict) and d.get("type") == "session.updated":
+                break
 
         for i in range(requests_count):
             voice = voice_cycle[i % len(voice_cycle)]
@@ -137,31 +137,38 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
             t_first = None
             total = 0
             was_rejected = False
-            # emit speak
+            # response.create
             await ws.send(json.dumps({
-                "type": "speak",
-                "request_id": request_id,
-                "text": text,
+                "type": "response.create",
+                "response_id": request_id,
+                "input": text,
                 "voice": voice,
                 "speed": speed,
             }))
             t0 = time.time()
             while True:
                 msg = await ws.recv()
-                if isinstance(msg, (bytes, bytearray)):
-                    # Ignore primer (all-zero) chunks for TTFB measurement
-                    if t_first is None and _is_primer_chunk(msg):
-                        continue
-                    if t_first is None:
-                        t_first = time.time()
-                        print(f"    Worker {worker_id}: First chunk after {(t_first - t0) * 1000:.0f}ms")
-                    total += len(msg)
-                    continue
                 try:
                     data = json.loads(msg)
                 except Exception:
                     continue
-                if isinstance(data, dict) and data.get("type") == "error" and data.get("request_id") == request_id:
+                if not isinstance(data, dict):
+                    continue
+                if data.get("type") == "response.output_audio.delta" and data.get("response") == request_id:
+                    b64 = data.get("delta") or ""
+                    try:
+                        import base64 as _b64
+                        chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                    except Exception:
+                        chunk = b""
+                    if t_first is None and _is_primer_chunk(chunk):
+                        continue
+                    if t_first is None:
+                        t_first = time.time()
+                        print(f"    Worker {worker_id}: First chunk after {(t_first - t0) * 1000:.0f}ms")
+                    total += len(chunk)
+                    continue
+                if data.get("type") == "response.error" and data.get("response") == request_id:
                     code = data.get("code")
                     if code == "busy":
                         print(f"    Worker {worker_id}: Request {request_id} rejected (busy)")
@@ -172,14 +179,14 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
                         print(f"    Worker {worker_id}: Request {request_id} error: {code}")
                         was_rejected = True
                         break
-                if isinstance(data, dict) and data.get("type") in ("done", "canceled") and data.get("request_id") == request_id:
+                if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == request_id:
                     break
             if was_rejected:
                 continue
             t_end = time.time()
             results.append(_metrics(total, t0 or t_end, t_first or t_end, t_end))
-        # send stop
-        await ws.send(json.dumps({"type":"stop"}))
+        # end session
+        await ws.send(json.dumps({"type":"session.end"}))
     return {"results": results, "rejected": rejected}
 
 def _split_counts(total: int, workers: int) -> List[int]:

@@ -86,23 +86,23 @@ class TPMWorker:
         end_time = start_time + self.duration_s
         
         async with websockets.connect(self.ws_url, max_size=None, compression=None) as ws:
-            # Start session
+            # OpenAI session
             await ws.send(json.dumps({
-                "type": "start",
-                "voice": self.voice_cycle[0],
-                "format": self.server_format,
-                "sample_rate": SAMPLE_RATE,
+                "type": "session.update",
+                "session": {
+                    "voice": self.voice_cycle[0],
+                    "audio": {"format": self.server_format, "sample_rate": SAMPLE_RATE},
+                },
             }))
-            # Wait for started
+            # Wait for session.updated
             while True:
                 m = await ws.recv()
-                if not isinstance(m, (bytes, bytearray)):
-                    try:
-                        d = json.loads(m)
-                    except Exception:
-                        continue
-                    if isinstance(d, dict) and d.get("type") == "started":
-                        break
+                try:
+                    d = json.loads(m)
+                except Exception:
+                    continue
+                if isinstance(d, dict) and d.get("type") == "session.updated":
+                    break
             
             # Continuous request loop
             while time.time() < end_time:
@@ -115,11 +115,11 @@ class TPMWorker:
                 was_successful = False
                 was_rejected = False
                 
-                # Send speak request
+                # Create response
                 await ws.send(json.dumps({
-                    "type": "speak",
-                    "request_id": request_id,
-                    "text": self.text,
+                    "type": "response.create",
+                    "response_id": request_id,
+                    "input": self.text,
                     "voice": voice,
                     "speed": self.speed,
                 }))
@@ -133,36 +133,39 @@ class TPMWorker:
                         self.failed += 1
                         break
                         
-                    if isinstance(msg, (bytes, bytearray)):
-                        # Got audio data
-                        if t_first is None and not _is_primer_chunk(msg):
-                            t_first = time.time()
-                            ttfb_ms = (t_first - t_start) * 1000
-                            self.ttfb_times.append(ttfb_ms)
-                        continue
-                        
                     try:
                         data = json.loads(msg)
                     except Exception:
                         continue
-                        
-                    if isinstance(data, dict) and data.get("request_id") == request_id:
-                        msg_type = data.get("type")
-                        if msg_type == "error":
-                            code = data.get("code")
-                            if code == "busy":
-                                self.rejected += 1
-                                was_rejected = True
-                            else:
-                                self.failed += 1
-                            break
-                        elif msg_type in ("done", "canceled"):
+                    if not isinstance(data, dict):
+                        continue
+                    if data.get("type") == "response.output_audio.delta" and data.get("response") == request_id:
+                        b64 = data.get("delta") or ""
+                        try:
+                            chunk = __import__("base64").b64decode(b64) if isinstance(b64, str) else b""
+                        except Exception:
+                            chunk = b""
+                        if t_first is None and not _is_primer_chunk(chunk):
+                            t_first = time.time()
+                            ttfb_ms = (t_first - t_start) * 1000
+                            self.ttfb_times.append(ttfb_ms)
+                        continue
+                    if data.get("type") == "response.error" and data.get("response") == request_id:
+                        code = data.get("code")
+                        if code == "busy":
+                            self.rejected += 1
+                            was_rejected = True
+                        else:
+                            self.failed += 1
+                        break
+                    if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == request_id:
+                        if data.get("type") == "response.completed":
                             self.successful += 1
                             was_successful = True
-                            break
+                        break
                 
-            # Stop session
-            await ws.send(json.dumps({"type": "stop"}))
+            # End session
+            await ws.send(json.dumps({"type": "session.end"}))
         
         return {
             "worker_id": self.worker_id,

@@ -75,26 +75,26 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
 
     async with websockets.connect(ws_url, max_size=None, compression=None, ping_interval=20, ping_timeout=20) as ws:
         await ws.send(json.dumps({
-            "type": "start",
-            "voice": voice,
-            "format": "pcm",
-            "sample_rate": SAMPLE_RATE,
+            "type": "session.update",
+            "session": {
+                "voice": voice,
+                "audio": {"format": "pcm", "sample_rate": SAMPLE_RATE},
+            },
         }))
-        # Await started
+        # Await session.updated
         while True:
             m = await ws.recv()
-            if not isinstance(m, (bytes, bytearray)):
-                try:
-                    d = json.loads(m)
-                except Exception:
-                    continue
-                if isinstance(d, dict) and d.get("type") == "started":
-                    break
+            try:
+                d = json.loads(m)
+            except Exception:
+                continue
+            if isinstance(d, dict) and d.get("type") == "session.updated":
+                break
 
         await ws.send(json.dumps({
-            "type": "speak",
-            "request_id": request_id,
-            "text": text,
+            "type": "response.create",
+            "response_id": request_id,
+            "input": text,
             "voice": voice,
             "speed": speed,
         }))
@@ -106,21 +106,28 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
             except asyncio.TimeoutError:
                 raise RuntimeError("WS timeout waiting for first message/chunk")
 
-            if isinstance(msg, (bytes, bytearray)):
-                # Ignore primer (all-zero) chunks for TTFB and metrics
-                if t_first is None and _is_primer_chunk(msg):
-                    continue
-                if t_first is None:
-                    t_first = time.time()
-                total += len(msg)
-                if audio_buf is not None:
-                    audio_buf.extend(msg)
-                continue
             try:
                 data = json.loads(msg)
             except Exception:
                 continue
-            if isinstance(data, dict) and data.get("type") in ("done", "canceled") and data.get("request_id") == request_id:
+            if not isinstance(data, dict):
+                continue
+            if data.get("type") == "response.output_audio.delta" and data.get("response") == request_id:
+                b64 = data.get("delta") or ""
+                try:
+                    import base64 as _b64
+                    chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                except Exception:
+                    chunk = b""
+                if t_first is None and _is_primer_chunk(chunk):
+                    continue
+                if t_first is None:
+                    t_first = time.time()
+                total += len(chunk)
+                if audio_buf is not None:
+                    audio_buf.extend(chunk)
+                continue
+            if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == request_id:
                 break
         t_end = time.time()
     metrics = _compute_metrics(total, t0, t_first or t_end, t_end)
@@ -132,24 +139,22 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
     return metrics
 
 async def _ws_ready_check(base_url: str, voice: str) -> bool:
-    """Perform a WS handshake (start→started→stop) to validate readiness."""
+    """Perform a WS handshake (session.update→session.updated) to validate readiness."""
     api_key = os.getenv("API_KEY", "")
     qs = f"?api_key={api_key}" if api_key else ""
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws" + qs
     try:
         async with websockets.connect(ws_url, max_size=None, compression=None, ping_interval=20, ping_timeout=20) as ws:
-            await ws.send(json.dumps({"type": "start", "voice": voice, "format": "pcm", "sample_rate": SAMPLE_RATE}))
-            # wait for started
+            await ws.send(json.dumps({"type": "session.update", "session": {"voice": voice, "audio": {"format": "pcm", "sample_rate": SAMPLE_RATE}}}))
+            # wait for session.updated
             while True:
                 m = await ws.recv()
-                if not isinstance(m, (bytes, bytearray)):
-                    try:
-                        d = json.loads(m)
-                    except Exception:
-                        continue
-                    if isinstance(d, dict) and d.get("type") == "started":
-                        break
-            await ws.send(json.dumps({"type": "stop"}))
+                try:
+                    d = json.loads(m)
+                except Exception:
+                    continue
+                if isinstance(d, dict) and d.get("type") == "session.updated":
+                    break
         return True
     except Exception as e:
         logger.error(f"WS readiness check failed: {e}")
