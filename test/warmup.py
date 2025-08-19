@@ -102,6 +102,7 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
                 "input": text,
                 "voice": voice,
                 "speed": speed,
+                "test_mode": "single",
             }))
             t0 = time.time()
             while True:
@@ -146,6 +147,7 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
                     "input": sent,
                     "voice": voice,
                     "speed": speed,
+                    "test_mode": "sentences",
                 }))
                 while True:
                     try:

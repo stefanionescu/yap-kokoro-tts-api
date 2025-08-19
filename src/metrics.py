@@ -1,13 +1,16 @@
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+
 import json
 import time
 from typing import Dict, List
-from src.constants import METRICS_LOG_PATH
+from constants import METRICS_LOG_PATH
 
 def log_request_metrics(metrics: Dict) -> None:
     """Append per-request metrics as a JSON line.
 
-    Expected keys: request_id, ttfb_ms, wall_s, audio_s, rtf, xrt, kbps, canceled(bool)
-    Optional keys: n_sentences(int), n_ws_chunks(int), total_samples(int)
+    Expected keys: request_id, ttfb_ms, wall_s, audio_s, rtf, xrt, kbps, canceled(bool), test_mode
     Adds ts epoch seconds on write.
     """
     try:
@@ -21,10 +24,7 @@ def log_request_metrics(metrics: Dict) -> None:
             "xrt": float(metrics.get("xrt", 0.0)),
             "kbps": float(metrics.get("kbps", 0.0)),
             "canceled": bool(metrics.get("canceled", False)),
-            # New metadata for richer aggregation (backfilled safely on read)
-            "n_sentences": int(metrics.get("n_sentences", metrics.get("sentences", 1)) or 1),
-            "n_ws_chunks": int(metrics.get("n_ws_chunks", 0) or 0),
-            "total_samples": int(metrics.get("total_samples", 0) or 0),
+            "test_mode": metrics.get("test_mode"),  # Track client test mode
         }
         METRICS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with METRICS_LOG_PATH.open("a", encoding="utf-8") as f:
@@ -62,26 +62,12 @@ def _window_seconds(spec: str) -> int:
     return int(spec)
 
 def aggregate_window(records: List[Dict], window_spec: str) -> Dict[str, Dict[str, float]]:
+    """Aggregate metrics for records within a time window, bucketed by test mode."""
     now = time.time()
     win = _window_seconds(window_spec)
     cutoff = now - win
     sel = [r for r in records if float(r.get("ts", 0)) >= cutoff]
-
-    def _normalize_record(r: Dict) -> Dict:
-        # Ensure new fields present for older logs
-        r2 = dict(r)
-        try:
-            r2["n_sentences"] = int(r.get("n_sentences") or 1)
-        except Exception:
-            r2["n_sentences"] = 1
-        try:
-            r2["n_ws_chunks"] = int(r.get("n_ws_chunks") or 0)
-        except Exception:
-            r2["n_ws_chunks"] = 0
-        return r2
-
-    sel = [_normalize_record(r) for r in sel]
-
+    
     def _stats(sub: List[Dict]) -> Dict[str, float]:
         n = len(sub)
         if n == 0:
@@ -95,10 +81,13 @@ def aggregate_window(records: List[Dict], window_spec: str) -> Dict[str, Dict[st
                 "avg_kbps": 0.0,
                 "canceled_rate": 0.0,
             }
+        
         def avg(key: str) -> float:
             vals = [float(r.get(key, 0.0)) for r in sub]
             return sum(vals) / len(vals) if vals else 0.0
+        
         canceled = sum(1 for r in sub if bool(r.get("canceled", False)))
+        
         return {
             "count": float(n),
             "avg_ttfb_ms": avg("ttfb_ms"),
@@ -109,102 +98,60 @@ def aggregate_window(records: List[Dict], window_spec: str) -> Dict[str, Dict[st
             "avg_kbps": avg("kbps"),
             "canceled_rate": (canceled / n) if n > 0 else 0.0,
         }
-
-    # Per-request buckets
-    all_stats = _stats(sel)
-    single_stats = _stats([r for r in sel if int(r.get("n_sentences", 1)) == 1])
-    block_stats = _stats([r for r in sel if int(r.get("n_sentences", 1)) > 1])
-
-    # Normalized views (per sentence and per WebSocket chunk)
-    def _normalized(sub: List[Dict], unit_key: str) -> Dict[str, float]:
-        if not sub:
-            return {
-                "units": 0.0,
-                "avg_ttfb_ms": 0.0,
-                "avg_wall_s": 0.0,
-                "avg_audio_s": 0.0,
-                "avg_rtf": 0.0,
-                "avg_xrt": 0.0,
-                "avg_kbps": 0.0,
-            }
-        try:
-            total_units = sum(max(0, int(r.get(unit_key, 0) or 0)) for r in sub)
-        except Exception:
-            total_units = 0
-        if total_units <= 0:
-            return {
-                "units": 0.0,
-                "avg_ttfb_ms": 0.0,
-                "avg_wall_s": 0.0,
-                "avg_audio_s": 0.0,
-                "avg_rtf": 0.0,
-                "avg_xrt": 0.0,
-                "avg_kbps": 0.0,
-            }
-        sum_ttfb = sum(float(r.get("ttfb_ms", 0.0)) for r in sub)
-        sum_wall = sum(float(r.get("wall_s", 0.0)) for r in sub)
-        sum_audio = sum(float(r.get("audio_s", 0.0)) for r in sub)
-        # Derived normalized values
-        avg_wall_per_unit = sum_wall / total_units
-        avg_audio_per_unit = sum_audio / total_units
-        # Ratios are invariant to unit scaling when computed per-record, but for a population
-        # we compute from sums for stability
-        avg_rtf = (sum_wall / sum_audio) if sum_audio > 0 else 0.0
-        avg_xrt = (sum_audio / sum_wall) if sum_wall > 0 else 0.0
-        # Throughput as simple mean of per-request kbps (kept consistent with _stats)
-        avg_kbps = sum(float(r.get("kbps", 0.0)) for r in sub) / len(sub)
-        return {
-            "units": float(total_units),
-            "avg_ttfb_ms": (sum_ttfb / total_units),
-            "avg_wall_s": avg_wall_per_unit,
-            "avg_audio_s": avg_audio_per_unit,
-            "avg_rtf": avg_rtf,
-            "avg_xrt": avg_xrt,
-            "avg_kbps": avg_kbps,
-        }
-
-    per_sentence_norm = _normalized(sel, "n_sentences")
-    per_chunk_norm = _normalized([r for r in sel if int(r.get("n_ws_chunks", 0)) > 0], "n_ws_chunks")
-
+    
+    # Bucket by test mode
+    overall_stats = _stats(sel)
+    single_stats = _stats([r for r in sel if r.get("test_mode") == "single"])
+    sentences_stats = _stats([r for r in sel if r.get("test_mode") == "sentences"])
+    
     return {
-        "all": all_stats,
+        "overall": overall_stats,
         "single": single_stats,
-        "block": block_stats,
-        "per_sentence": per_sentence_norm,
-        "per_chunk": per_chunk_norm,
+        "sentences": sentences_stats,
     }
 
 def print_report(periods: List[str]) -> None:
+    """Print TTS performance metrics bucketed by test mode for specified time periods."""
     recs = _load_records()
-    print(f"Records: {len(recs)} in {METRICS_LOG_PATH}")
+    print(f"TTS Performance Report - {len(recs)} total records in {METRICS_LOG_PATH}")
+    
     for p in periods:
-        s = aggregate_window(recs, p)
-        all_s = s.get("all", {})
-        sg = s.get("single", {})
-        bl = s.get("block", {})
-        ps = s.get("per_sentence", {})
-        pc = s.get("per_chunk", {})
+        buckets = aggregate_window(recs, p)
+        overall = buckets.get("overall", {})
+        single = buckets.get("single", {})
+        sentences = buckets.get("sentences", {})
+        
+        total_count = int(overall.get('count', 0))
+        single_count = int(single.get('count', 0))
+        sentences_count = int(sentences.get('count', 0))
+        
+        if total_count == 0:
+            print(f"\n== Last {p} ==")
+            print("No requests in this period")
+            continue
+            
         print(f"\n== Last {p} ==")
-        print(f"count(all/single/block)={int(all_s.get('count',0))}/{int(sg.get('count',0))}/{int(bl.get('count',0))}")
-        print(
-            f"avg TTFB ms: {all_s.get('avg_ttfb_ms',0.0):.0f} | single: {sg.get('avg_ttfb_ms',0.0):.0f} | block: {bl.get('avg_ttfb_ms',0.0):.0f} | per-sent: {ps.get('avg_ttfb_ms',0.0):.0f} | per-chunk: {pc.get('avg_ttfb_ms',0.0):.0f}"
-        )
-        print(
-            f"avg wall s: {all_s.get('avg_wall_s',0.0):.2f} | single: {sg.get('avg_wall_s',0.0):.2f} | block: {bl.get('avg_wall_s',0.0):.2f} | per-sent: {ps.get('avg_wall_s',0.0):.2f} | per-chunk: {pc.get('avg_wall_s',0.0):.3f}"
-        )
-        print(
-            f"avg audio s: {all_s.get('avg_audio_s',0.0):.2f} | single: {sg.get('avg_audio_s',0.0):.2f} | block: {bl.get('avg_audio_s',0.0):.2f} | per-sent: {ps.get('avg_audio_s',0.0):.2f} | per-chunk: {pc.get('avg_audio_s',0.0):.3f}"
-        )
-        print(
-            f"avg RTF: {all_s.get('avg_rtf',0.0):.2f} | single: {sg.get('avg_rtf',0.0):.2f} | block: {bl.get('avg_rtf',0.0):.2f} | per-sent: {ps.get('avg_rtf',0.0):.2f} | per-chunk: {pc.get('avg_rtf',0.0):.2f}"
-        )
-        print(
-            f"avg xRT: {all_s.get('avg_xrt',0.0):.2f} | single: {sg.get('avg_xrt',0.0):.2f} | block: {bl.get('avg_xrt',0.0):.2f} | per-sent: {ps.get('avg_xrt',0.0):.2f} | per-chunk: {pc.get('avg_xrt',0.0):.2f}"
-        )
-        print(
-            f"avg throughput KB/s: {all_s.get('avg_kbps',0.0):.0f} | single: {sg.get('avg_kbps',0.0):.0f} | block: {bl.get('avg_kbps',0.0):.0f} | per-sent: {ps.get('avg_kbps',0.0):.0f} | per-chunk: {pc.get('avg_kbps',0.0):.0f}"
-        )
-        print(f"canceled rate: {all_s.get('canceled_rate',0.0)*100:.1f}% | single: {sg.get('canceled_rate',0.0)*100:.1f}% | block: {bl.get('canceled_rate',0.0)*100:.1f}%")
+        print(f"Total: {total_count} requests (Single: {single_count}, Sentences: {sentences_count})")
+        
+        def _print_bucket(name: str, stats: Dict[str, float]):
+            count = int(stats.get('count', 0))
+            if count == 0:
+                print(f"  {name}: No data")
+                return
+            print(f"  {name} ({count} requests):")
+            print(f"    TTFB: {stats.get('avg_ttfb_ms', 0.0):.0f} ms")
+            print(f"    RTF: {stats.get('avg_rtf', 0.0):.2f}x")
+            print(f"    xRT: {stats.get('avg_xrt', 0.0):.2f}x realtime")
+            print(f"    Processing: {stats.get('avg_wall_s', 0.0):.2f} s")
+            print(f"    Audio: {stats.get('avg_audio_s', 0.0):.2f} s")
+            print(f"    Throughput: {stats.get('avg_kbps', 0.0):.0f} KB/s")
+            cancel_rate = stats.get('canceled_rate', 0.0) * 100
+            if cancel_rate > 0:
+                print(f"    Canceled: {cancel_rate:.1f}%")
+        
+        _print_bucket("OVERALL", overall)
+        _print_bucket("SINGLE MODE", single)
+        _print_bucket("SENTENCES MODE", sentences)
 
 if __name__ == "__main__":
     import argparse

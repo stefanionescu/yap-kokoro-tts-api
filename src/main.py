@@ -1,12 +1,14 @@
-from src.logger import setup_logger
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+
+from logger import setup_logger
 setup_logger()
 
 import time
 import uuid as _uuid
-import os
-from src.engine import KokoroEngine
-from src.utils import split_sentences as _split_sentences
-from src.constants import (
+from engine import KokoroEngine
+from constants import (
     SAMPLE_RATE,
     WS_DEFAULT_BUFFER_BYTES,
     WS_DEFAULT_FLUSH_EVERY,
@@ -20,7 +22,7 @@ from src.constants import (
     JOB_QUEUE_GET_TIMEOUT_S,
     PROCESSOR_LOOP_SLEEP_S,
 )
-from src.metrics import log_request_metrics
+from metrics import log_request_metrics
 import torch
 from dotenv import load_dotenv
 from contextlib import asynccontextmanager
@@ -119,6 +121,7 @@ async def tts_stream_ws(websocket: WebSocket):
         text: str = job.get("text", "")
         voice: str = job.get("voice") or default_voice
         speed = job.get("speed")
+        test_mode = job.get("test_mode")
         response_id: str | None = job.get("response_id") if isinstance(job.get("response_id"), str) else None
         if not text:
             await send_json_safe({"type": "response.error", "response": response_id or req_id, "code": "empty_text"})
@@ -156,11 +159,6 @@ async def tts_stream_ws(websocket: WebSocket):
         start_time = time.perf_counter()
         total_samples = 0
         n_ws_chunks = 0
-        # Heuristic: classify whether the request is a single sentence or a block
-        try:
-            n_sentences = len(_split_sentences(text))
-        except Exception:
-            n_sentences = 1
         first_audio_at: float | None = None
         first_chunk = True
         buf = bytearray()
@@ -249,10 +247,7 @@ async def tts_stream_ws(websocket: WebSocket):
                         "xrt": xrt,
                         "kbps": kbps,
                         "canceled": False,
-                        # new metadata for per-sentence vs block classification and chunking
-                        "n_sentences": int(n_sentences) if isinstance(n_sentences, int) else 1,
-                        "n_ws_chunks": int(n_ws_chunks),
-                        "total_samples": int(total_samples),
+                        "test_mode": test_mode,
                     })
                 # Feed wall time into engine EWMA (ms) to improve admission estimation under load
                 with contextlib.suppress(Exception):
@@ -403,6 +398,7 @@ async def tts_stream_ws(websocket: WebSocket):
                     audio_cfg = data.get("audio") or {}
                     voice_override = data.get("voice") or (audio_cfg.get("voice") if isinstance(audio_cfg, dict) else None)
                     speed_raw = data.get("speed") or (audio_cfg.get("speed") if isinstance(audio_cfg, dict) else None)
+                    test_mode = data.get("test_mode")  # Track client test mode
                     spd_val = None
                     if speed_raw is not None:
                         try:
@@ -439,6 +435,7 @@ async def tts_stream_ws(websocket: WebSocket):
                         "text": input_text,
                         "voice": voice_override or default_voice,
                         "speed": spd_val,
+                        "test_mode": test_mode,
                     })
                 elif msg_type == "response.cancel":
                     resp = data.get("response") or data.get("response_id")

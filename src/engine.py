@@ -1,7 +1,10 @@
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+
 import asyncio
 from asyncio import QueueEmpty
 import logging
-import os
 import contextlib
 import subprocess
 import threading
@@ -15,7 +18,7 @@ import time
 import numpy as np
 from kokoro import KPipeline
 import torch
-from src.constants import (
+from constants import (
     SAMPLE_RATE,
     STREAM_DEFAULT_CHUNK_SECONDS,
     SCHED_DEFAULT_QUANTUM_BYTES,
