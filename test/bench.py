@@ -21,6 +21,7 @@ import statistics as stats
 from typing import Dict, List
 
 import websockets
+import re
 import os
 from dotenv import load_dotenv
 
@@ -101,7 +102,21 @@ def _is_primer_chunk(b: bytes) -> bool:
     return len(b) <= prime_bytes and not any(b)
 
 
-async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int, speed: float) -> dict:
+def _split_sentences(text: str) -> list[str]:
+    if not isinstance(text, str) or not text.strip():
+        return []
+    pattern = re.compile(r"(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St)\.)[.!?]\s+")
+    parts = []
+    start = 0
+    for m in pattern.finditer(text):
+        parts.append(text[start:m.end()].strip())
+        start = m.end()
+    tail = text[start:].strip()
+    if tail:
+        parts.append(tail)
+    return [p for p in parts if p]
+
+async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int, speed: float, mode: str) -> dict:
     """OpenAI Realtime WS: session.update once, then multiple response.create sequentially.
 
     Returns {"results": List[metrics], "rejected": int}
@@ -131,60 +146,109 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
 
         for i in range(requests_count):
             voice = voice_cycle[i % len(voice_cycle)]
-            request_id = f"req-{uuid.uuid4().hex[:8]}"
-            t_send = time.time()
-            t0 = None
-            t_first = None
-            total = 0
-            was_rejected = False
-            # response.create
-            await ws.send(json.dumps({
-                "type": "response.create",
-                "response_id": request_id,
-                "input": text,
-                "voice": voice,
-                "speed": speed,
-            }))
-            t0 = time.time()
-            while True:
-                msg = await ws.recv()
-                try:
-                    data = json.loads(msg)
-                except Exception:
-                    continue
-                if not isinstance(data, dict):
-                    continue
-                if data.get("type") == "response.output_audio.delta" and data.get("response") == request_id:
-                    b64 = data.get("delta") or ""
+            if mode == "single":
+                request_id = f"req-{uuid.uuid4().hex[:8]}"
+                t0 = None
+                t_first = None
+                total = 0
+                was_rejected = False
+                await ws.send(json.dumps({
+                    "type": "response.create",
+                    "response_id": request_id,
+                    "input": text,
+                    "voice": voice,
+                    "speed": speed,
+                }))
+                t0 = time.time()
+                while True:
+                    msg = await ws.recv()
                     try:
-                        import base64 as _b64
-                        chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                        data = json.loads(msg)
                     except Exception:
-                        chunk = b""
-                    if t_first is None and _is_primer_chunk(chunk):
                         continue
-                    if t_first is None:
-                        t_first = time.time()
-                        print(f"    Worker {worker_id}: First chunk after {(t_first - t0) * 1000:.0f}ms")
-                    total += len(chunk)
+                    if not isinstance(data, dict):
+                        continue
+                    if data.get("type") == "response.output_audio.delta" and data.get("response") == request_id:
+                        b64 = data.get("delta") or ""
+                        try:
+                            import base64 as _b64
+                            chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                        except Exception:
+                            chunk = b""
+                        if t_first is None and _is_primer_chunk(chunk):
+                            continue
+                        if t_first is None:
+                            t_first = time.time()
+                            print(f"    Worker {worker_id}: First chunk after {(t_first - t0) * 1000:.0f}ms")
+                        total += len(chunk)
+                        continue
+                    if data.get("type") == "response.error" and data.get("response") == request_id:
+                        code = data.get("code")
+                        if code == "busy":
+                            print(f"    Worker {worker_id}: Request {request_id} rejected (busy)")
+                            rejected += 1
+                            was_rejected = True
+                            break
+                        else:
+                            print(f"    Worker {worker_id}: Request {request_id} error: {code}")
+                            was_rejected = True
+                            break
+                    if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == request_id:
+                        break
+                if was_rejected:
                     continue
-                if data.get("type") == "response.error" and data.get("response") == request_id:
-                    code = data.get("code")
-                    if code == "busy":
-                        print(f"    Worker {worker_id}: Request {request_id} rejected (busy)")
-                        rejected += 1
-                        was_rejected = True
-                        break
-                    else:
-                        print(f"    Worker {worker_id}: Request {request_id} error: {code}")
-                        was_rejected = True
-                        break
-                if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == request_id:
-                    break
-            if was_rejected:
-                continue
-            t_end = time.time()
-            results.append(_metrics(total, t0 or t_end, t_first or t_end, t_end))
+                t_end = time.time()
+                results.append(_metrics(total, t0 or t_end, t_first or t_end, t_end))
+            else:
+                # sentences mode: aggregate metrics across sentences
+                sentences = _split_sentences(text)
+                ttfb_vals = []
+                bytes_total = 0
+                wall_start = time.time()
+                for sent in sentences:
+                    rid = f"req-{uuid.uuid4().hex[:8]}"
+                    t0 = None
+                    t_first = None
+                    sent_bytes = 0
+                    await ws.send(json.dumps({
+                        "type": "response.create",
+                        "response_id": rid,
+                        "input": sent,
+                        "voice": voice,
+                        "speed": speed,
+                    }))
+                    t0 = time.time()
+                    while True:
+                        msg = await ws.recv()
+                        try:
+                            data = json.loads(msg)
+                        except Exception:
+                            continue
+                        if not isinstance(data, dict):
+                            continue
+                        if data.get("type") == "response.output_audio.delta" and data.get("response") == rid:
+                            b64 = data.get("delta") or ""
+                            try:
+                                import base64 as _b64
+                                chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                            except Exception:
+                                chunk = b""
+                            if t_first is None and _is_primer_chunk(chunk):
+                                continue
+                            if t_first is None:
+                                t_first = time.time()
+                                ttfb_vals.append((t_first - t0) * 1000.0)
+                            sent_bytes += len(chunk)
+                            continue
+                        if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == rid:
+                            break
+                wall_end = time.time()
+                # Average TTFB across sentences; total bytes across all sentences
+                avg_ttfb = sum(ttfb_vals)/len(ttfb_vals) if ttfb_vals else 0.0
+                # Reuse _metrics with aggregate window and bytes (t0 is first sentence start)
+                m = _metrics(int(sum([]) or 0) + 0, wall_start, wall_start + (avg_ttfb/1000.0), wall_end)
+                m["ttfb_ms"] = avg_ttfb
+                results.append(m)
         # end session
         await ws.send(json.dumps({"type":"session.end"}))
     return {"results": results, "rejected": rejected}
@@ -195,7 +259,7 @@ def _split_counts(total: int, workers: int) -> List[int]:
     return [base + (1 if i < rem else 0) for i in range(workers)]
 
 
-async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int, speed: float):
+async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int, speed: float, mode: str):
     """Run benchmark using persistent WS per worker; multiple speak() per connection.
 
     Returns (results: List[metrics], rejected_count: int)
@@ -203,7 +267,7 @@ async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int, 
     workers = min(concurrency, total_reqs)
     counts = _split_counts(total_reqs, workers)
     voice_cycle = ["female", "male"]
-    tasks = [asyncio.create_task(_ws_worker(base_url, text, voice_cycle, counts[i], i+1, speed)) for i in range(workers)]
+    tasks = [asyncio.create_task(_ws_worker(base_url, text, voice_cycle, counts[i], i+1, speed, mode)) for i in range(workers)]
     results_nested = await asyncio.gather(*tasks, return_exceptions=True)
     results: List[Dict[str, float]] = []
     rejected_total = 0
@@ -225,6 +289,7 @@ def main() -> None:
     ap.add_argument("--text", default=DEFAULT_TEXT)
     ap.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
     ap.add_argument("--speed", type=float, default=1.0, help="Speech speed multiplier (0.5-2.0, default: 1.0)")
+    ap.add_argument("--mode", choices=["single","sentences"], default="single", help="Send full text in one request or sentence-by-sentence")
     args = ap.parse_args()
 
     base_url = f"http://{args.host}:{args.port}"
@@ -234,7 +299,7 @@ def main() -> None:
     print(f"Text preview: {text_to_use[:100]}...")
 
     t0 = time.time()
-    ws_res, rejected = asyncio.run(bench_ws(base_url, text_to_use, args.n, args.concurrency, args.speed))
+    ws_res, rejected = asyncio.run(bench_ws(base_url, text_to_use, args.n, args.concurrency, args.speed, args.mode))
     summarize("WebSocket", ws_res)
     print(f"Rejected: {rejected}")
     print(f"WebSocket elapsed: {time.time()-t0:.2f}s")

@@ -12,6 +12,7 @@ import time
 import os
 import logging
 import argparse
+import re
 from dotenv import load_dotenv
 
 # Setup logging
@@ -63,7 +64,21 @@ def _is_primer_chunk(b: bytes) -> bool:
         prime_bytes = 512
     return len(b) <= prime_bytes and not any(b)
 
-async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool, speed: float = 1.0):
+def _split_sentences(text: str) -> list[str]:
+    if not isinstance(text, str) or not text.strip():
+        return []
+    pattern = re.compile(r"(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St)\.)[.!?]\s+")
+    parts = []
+    start = 0
+    for m in pattern.finditer(text):
+        parts.append(text[start:m.end()].strip())
+        start = m.end()
+    tail = text[start:].strip()
+    if tail:
+        parts.append(tail)
+    return [p for p in parts if p]
+
+async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool, speed: float = 1.0, mode: str = "single"):
     api_key = os.getenv("API_KEY", "")
     qs = f"?api_key={api_key}" if api_key else ""
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws" + qs
@@ -91,44 +106,87 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
             if isinstance(d, dict) and d.get("type") == "session.updated":
                 break
 
-        await ws.send(json.dumps({
-            "type": "response.create",
-            "response_id": request_id,
-            "input": text,
-            "voice": voice,
-            "speed": speed,
-        }))
-        t0 = time.time()
-
-        while True:
-            try:
-                msg = await asyncio.wait_for(ws.recv(), timeout=10)
-            except asyncio.TimeoutError:
-                raise RuntimeError("WS timeout waiting for first message/chunk")
-
-            try:
-                data = json.loads(msg)
-            except Exception:
-                continue
-            if not isinstance(data, dict):
-                continue
-            if data.get("type") == "response.output_audio.delta" and data.get("response") == request_id:
-                b64 = data.get("delta") or ""
+        if mode == "single":
+            await ws.send(json.dumps({
+                "type": "response.create",
+                "response_id": request_id,
+                "input": text,
+                "voice": voice,
+                "speed": speed,
+            }))
+            t0 = time.time()
+            while True:
                 try:
-                    import base64 as _b64
-                    chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                    msg = await asyncio.wait_for(ws.recv(), timeout=10)
+                except asyncio.TimeoutError:
+                    raise RuntimeError("WS timeout waiting for first message/chunk")
+                try:
+                    data = json.loads(msg)
                 except Exception:
-                    chunk = b""
-                if t_first is None and _is_primer_chunk(chunk):
                     continue
-                if t_first is None:
-                    t_first = time.time()
-                total += len(chunk)
-                if audio_buf is not None:
-                    audio_buf.extend(chunk)
-                continue
-            if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == request_id:
-                break
+                if not isinstance(data, dict):
+                    continue
+                if data.get("type") == "response.output_audio.delta" and data.get("response") == request_id:
+                    b64 = data.get("delta") or ""
+                    try:
+                        import base64 as _b64
+                        chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                    except Exception:
+                        chunk = b""
+                    if t_first is None and _is_primer_chunk(chunk):
+                        continue
+                    if t_first is None:
+                        t_first = time.time()
+                    total += len(chunk)
+                    if audio_buf is not None:
+                        audio_buf.extend(chunk)
+                    continue
+                if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == request_id:
+                    break
+        else:
+            # sentences mode: average TTFB across sentences; aggregate bytes
+            sentences = _split_sentences(text)
+            ttfb_vals = []
+            for sent in sentences:
+                rid = f"req-{uuid.uuid4().hex[:8]}"
+                t0 = time.time()
+                sent_first = None
+                await ws.send(json.dumps({
+                    "type": "response.create",
+                    "response_id": rid,
+                    "input": sent,
+                    "voice": voice,
+                    "speed": speed,
+                }))
+                while True:
+                    try:
+                        msg = await asyncio.wait_for(ws.recv(), timeout=10)
+                    except asyncio.TimeoutError:
+                        raise RuntimeError("WS timeout waiting for a sentence chunk")
+                    try:
+                        data = json.loads(msg)
+                    except Exception:
+                        continue
+                    if not isinstance(data, dict):
+                        continue
+                    if data.get("type") == "response.output_audio.delta" and data.get("response") == rid:
+                        b64 = data.get("delta") or ""
+                        try:
+                            import base64 as _b64
+                            chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                        except Exception:
+                            chunk = b""
+                        if sent_first is None and _is_primer_chunk(chunk):
+                            continue
+                        if sent_first is None:
+                            sent_first = time.time()
+                            ttfb_vals.append((sent_first - t0) * 1000.0)
+                        total += len(chunk)
+                        if audio_buf is not None:
+                            audio_buf.extend(chunk)
+                        continue
+                    if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == rid:
+                        break
         t_end = time.time()
     metrics = _compute_metrics(total, t0, t_first or t_end, t_end)
     if save_audio and total > 0 and audio_buf is not None:
@@ -160,7 +218,7 @@ async def _ws_ready_check(base_url: str, voice: str) -> bool:
         logger.error(f"WS readiness check failed: {e}")
         return False
 
-def warmup_api(host="localhost", port=8000, save_audio=False, short_reply: bool = False, speed: float = 1.0):
+def warmup_api(host="localhost", port=8000, save_audio=False, short_reply: bool = False, speed: float = 1.0, mode: str = "single"):
     """Send warmup requests to the API (WS-only)."""
     base_url = f"http://{host}:{port}"
     
@@ -195,7 +253,7 @@ def warmup_api(host="localhost", port=8000, save_audio=False, short_reply: bool 
     for voice in ["female", "male"]:
         logger.info(f"[WS] {voice}: starting…")
         try:
-            ws_m = asyncio.run(_ws_measure_async(base_url, test_text, voice, save_audio, speed))
+            ws_m = asyncio.run(_ws_measure_async(base_url, test_text, voice, save_audio, speed, mode))
             logger.info(_format_metrics(f"WS   {voice}", ws_m))
         except Exception as e:
             logger.error(f"[WS] Error for voice '{voice}': {e}")
@@ -210,6 +268,7 @@ if __name__ == "__main__":
     parser.add_argument("--save", action="store_true", help="Save generated audio files")
     parser.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
     parser.add_argument("--speed", type=float, default=1.0, help="Speech speed multiplier (0.5-2.0, default: 1.0)")
+    parser.add_argument("--mode", choices=["single","sentences"], default="single", help="Send full text in one request or sentence-by-sentence")
     
     args = parser.parse_args()
-    warmup_api(args.host, args.port, args.save, args.short_reply, args.speed)
+    warmup_api(args.host, args.port, args.save, args.short_reply, args.speed, args.mode)

@@ -2,6 +2,7 @@ from src.logger import setup_logger
 setup_logger()
 
 import time
+import uuid as _uuid
 import os
 from src.engine import KokoroEngine
 from constants import (
@@ -133,10 +134,11 @@ async def tts_stream_ws(websocket: WebSocket):
             return
 
         active_request_id = req_id
-        await send_json_safe({
-            "type": "response.created",
-            "response": response_id or req_id,
-        })
+        if not job.get("suppress_created"):
+            await send_json_safe({
+                "type": "response.created",
+                "response": response_id or req_id,
+            })
 
         # Optional primer (as base64 audio delta)
         if os.getenv("PRIME_STREAM", str(PRIME_STREAM_DEFAULT)) == "1":
@@ -147,14 +149,12 @@ async def tts_stream_ws(websocket: WebSocket):
                     "type": "response.output_audio.delta",
                     "response": response_id or req_id,
                     "delta": delta_b64,
-                    "mime_type": f"audio/pcm;rate={SAMPLE_RATE}",
                 })
 
         safe_speed = max(SPEED_MIN, min(SPEED_MAX, float(speed))) if speed is not None else None
         start_time = time.perf_counter()
         total_samples = 0
         first_audio_at: float | None = None
-        segment_index = 0
         first_chunk = True
         buf = bytearray()
         chunks_since_flush = 0
@@ -166,7 +166,7 @@ async def tts_stream_ws(websocket: WebSocket):
         LONG_SEND_LOG_MS = float(os.getenv("WS_LONG_SEND_LOG_MS", str(WS_DEFAULT_LONG_SEND_LOG_MS)))
 
         async def _flush() -> None:
-            nonlocal buf, chunks_since_flush, segment_index, total_samples, first_chunk, first_audio_at
+            nonlocal buf, chunks_since_flush, total_samples, first_chunk, first_audio_at
             if not buf:
                 return
             send_t0 = time.perf_counter()
@@ -195,7 +195,6 @@ async def tts_stream_ws(websocket: WebSocket):
             chunks_since_flush = 0
 
             # no meta events in OpenAI mode
-            segment_index += 1
 
         try:
             agen = engine.generate_speech_async(
@@ -220,7 +219,8 @@ async def tts_stream_ws(websocket: WebSocket):
                 await _flush()
 
             if req_id in canceled:
-                await send_json_safe({"type": "response.canceled", "response": response_id or req_id})
+                if not job.get("suppress_completed"):
+                    await send_json_safe({"type": "response.canceled", "response": response_id or req_id})
             else:
                 # Compute simple per-request metrics and log via engine
                 t_end = time.perf_counter()
@@ -231,25 +231,27 @@ async def tts_stream_ws(websocket: WebSocket):
                 xrt = audio_s / wall_s if wall_s > 0 else 0.0
                 # PCM16 mono: 2 bytes per sample → convert samples→KB for throughput
                 kbps = ((total_samples * 2) / 1024.0) / wall_s if wall_s > 0 else 0.0
-                log_request_metrics({
-                    "request_id": req_id,
-                    "ttfb_ms": ttfb_ms,
-                    "wall_s": wall_s,
-                    "audio_s": audio_s,
-                    "rtf": rtf,
-                    "xrt": xrt,
-                    "kbps": kbps,
-                    "canceled": False,
-                })
+                if not job.get("suppress_completed"):
+                    log_request_metrics({
+                        "request_id": req_id,
+                        "ttfb_ms": ttfb_ms,
+                        "wall_s": wall_s,
+                        "audio_s": audio_s,
+                        "rtf": rtf,
+                        "xrt": xrt,
+                        "kbps": kbps,
+                        "canceled": False,
+                    })
                 # Feed wall time into engine EWMA (ms) to improve admission estimation under load
                 with contextlib.suppress(Exception):
                     engine.record_job_wall_ms(wall_s * 1000.0)
-                await send_json_safe({
-                    "type": "response.completed",
-                    "response": response_id or req_id,
-                    "duration_s": total_samples / float(SAMPLE_RATE),
-                    "total_samples": total_samples,
-                })
+                if not job.get("suppress_completed"):
+                    await send_json_safe({
+                        "type": "response.completed",
+                        "response": response_id or req_id,
+                        "duration_s": total_samples / float(SAMPLE_RATE),
+                        "total_samples": total_samples,
+                    })
         except Exception as e:
             logger.exception("WebSocket: error in stream_one(%s): %s", req_id, e)
             await send_json_safe({"type": "response.error", "response": response_id or req_id, "code": "stream_error", "message": str(e)})
@@ -260,6 +262,61 @@ async def tts_stream_ws(websocket: WebSocket):
                 engine.release_accept_slot()
 
     # Receiver loop: handles incoming control frames concurrently
+    # Incremental input state (for Pipecat-style streaming)
+    pending_text: str = ""
+    utterance_id: str | None = None
+    last_append_t: float = 0.0
+    flush_task: asyncio.Task | None = None
+    FLUSH_IDLE_MS = int(os.getenv("FLUSH_IDLE_MS", "160"))
+
+    async def _maybe_flush(force: bool = False) -> None:
+        nonlocal pending_text, utterance_id, last_append_t
+        buf = pending_text.strip()
+        if not buf:
+            return
+        if not force:
+            idle_ms = (time.perf_counter() - last_append_t) * 1000.0
+            if idle_ms < FLUSH_IDLE_MS:
+                return
+        # consume buffer as a single unit
+        pending_text = ""
+        # Admission control
+        ok = False
+        try:
+            ok = await engine.try_accept_request_async()  # type: ignore[attr-defined]
+        except AttributeError:
+            ok = engine.try_accept_request()
+        if not ok:
+            await send_json_safe({"type": "response.error", "response": utterance_id or "", "code": "busy"})
+            return
+        first_chunk_of_utt = utterance_id is None
+        if utterance_id is None:
+            utterance_id = f"utt-{int(time.time()*1000)}"
+        await job_queue.put({
+            "request_id": f"{utterance_id}-{_uuid.uuid4().hex[:6]}",
+            "response_id": utterance_id,
+            "text": buf,
+            "voice": default_voice,
+            "speed": None,
+            # Only send response.created on the first flush of this utterance
+            "suppress_created": (not first_chunk_of_utt),
+            # Only send response.completed on commit/force; keep streaming otherwise
+            "suppress_completed": (not force),
+        })
+
+    async def _schedule_debounce_flush() -> None:
+        nonlocal flush_task
+        if flush_task and not flush_task.done():
+            with contextlib.suppress(Exception):
+                flush_task.cancel()
+        async def _runner():
+            try:
+                await asyncio.sleep(FLUSH_IDLE_MS / 1000.0)
+                await _maybe_flush(force=True)
+            except Exception:
+                pass
+        flush_task = asyncio.create_task(_runner())
+
     async def receiver_loop() -> None:
         nonlocal default_voice, out_format, closing
         while True:
@@ -288,7 +345,6 @@ async def tts_stream_ws(websocket: WebSocket):
                     a_top = data.get("audio") or {}
                     a_sess = sess.get("audio") if isinstance(sess, dict) else {}
                     voice_val = (v_top or v_sess or default_voice) or "female"
-                    fmt_val = (a_top.get("format") if isinstance(a_top, dict) else None) or (a_sess.get("format") if isinstance(a_sess, dict) else None) or "pcm"
                     sr_val = (a_top.get("sample_rate") if isinstance(a_top, dict) else None) or (a_sess.get("sample_rate") if isinstance(a_sess, dict) else None) or SAMPLE_RATE
                     try:
                         resolve_voice(voice_val)
@@ -304,6 +360,24 @@ async def tts_stream_ws(websocket: WebSocket):
                             "audio": {"format": out_format, "sample_rate": int(sr_val) if isinstance(sr_val, (int, float)) else SAMPLE_RATE},
                         },
                     })
+                elif msg_type == "input.append":
+                    chunk = data.get("text")
+                    if isinstance(chunk, str) and chunk:
+                        pending_text += chunk
+                        last_append_t = time.perf_counter()
+                        await _maybe_flush(force=False)
+                        await _schedule_debounce_flush()
+                elif msg_type == "input.commit":
+                    await _maybe_flush(force=True)
+                    # Reset utterance id after commit completes
+                    utterance_id = None
+                elif msg_type == "barge":
+                    # Cancel current playback and clear buffer
+                    if active_request_id:
+                        canceled.add(active_request_id)
+                        engine.cancel_request(str(active_request_id))
+                    pending_text = ""
+                    utterance_id = None
                 elif msg_type == "response.create":
                     req_id = data.get("response_id") or data.get("id") or f"req-{int(time.time()*1000)}"
                     input_text = data.get("input") or data.get("text") or data.get("instructions")
@@ -400,11 +474,9 @@ async def tts_stream_ws(websocket: WebSocket):
             if websocket.client_state == WebSocketState.CONNECTED:
                 await websocket.close()
 
-
 @app.get("/healthz")
 async def healthz():
     return {"ok": True}
-
 
 @app.get("/readyz")
 async def readyz():

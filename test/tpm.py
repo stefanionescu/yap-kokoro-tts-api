@@ -7,9 +7,11 @@ continuously for 60 seconds. When one request completes, immediately send anothe
 Tracks successful vs failed transactions and average TTFB.
 
 Examples:
-  python test/tpm.py
-  python test/tpm.py --duration 120 --host your-host
-  python test/tpm.py --short-reply --speed 1.5
+  # Full text per transaction (TX counted when single request completes)
+  python test/tpm.py --mode single
+  # Sentence-by-sentence per TX (TX counted when all sentences complete)
+  python test/tpm.py --mode sentences --duration 120 --host your-host
+  python test/tpm.py --short-reply --speed 1.5 --mode single
 """
 import argparse
 import asyncio
@@ -22,6 +24,7 @@ import os
 from dotenv import load_dotenv
 
 import websockets
+import re
 
 # Load .env to get MAX_CONCURRENT_JOBS and other defaults
 load_dotenv(override=True)
@@ -60,17 +63,32 @@ def _is_primer_chunk(b: bytes) -> bool:
         prime_bytes = 512
     return len(b) <= prime_bytes and not any(b)
 
+def _split_sentences(text: str) -> list[str]:
+    if not isinstance(text, str) or not text.strip():
+        return []
+    pattern = re.compile(r"(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St)\.)[.!?]\s+")
+    parts = []
+    start = 0
+    for m in pattern.finditer(text):
+        parts.append(text[start:m.end()].strip())
+        start = m.end()
+    tail = text[start:].strip()
+    if tail:
+        parts.append(tail)
+    return [p for p in parts if p]
+
 class TPMWorker:
     """Sustained load worker that sends requests continuously until time expires."""
     
     def __init__(self, worker_id: int, ws_url: str, text: str, voice_cycle: List[str], 
-                 speed: float, duration_s: float):
+                 speed: float, duration_s: float, mode: str):
         self.worker_id = worker_id
         self.ws_url = ws_url
         self.text = text
         self.voice_cycle = voice_cycle
         self.speed = speed
         self.duration_s = duration_s
+        self.mode = mode
         
         # Results tracking
         self.total_attempts = 0
@@ -109,59 +127,91 @@ class TPMWorker:
                 request_id = f"req-{uuid.uuid4().hex[:8]}"
                 self.total_attempts += 1
                 
-                t_start = time.time()
-                t_first = None
-                was_successful = False
-                was_rejected = False
-                
-                # Create response
-                await ws.send(json.dumps({
-                    "type": "response.create",
-                    "response_id": request_id,
-                    "input": self.text,
-                    "voice": voice,
-                    "speed": self.speed,
-                }))
-                
-                # Wait for completion
-                while True:
-                    try:
-                        msg = await asyncio.wait_for(ws.recv(), timeout=30)
-                    except asyncio.TimeoutError:
-                        print(f"    Worker {self.worker_id}: Request {request_id} timed out")
-                        self.failed += 1
-                        break
-                        
-                    try:
-                        data = json.loads(msg)
-                    except Exception:
-                        continue
-                    if not isinstance(data, dict):
-                        continue
-                    if data.get("type") == "response.output_audio.delta" and data.get("response") == request_id:
-                        b64 = data.get("delta") or ""
+                if self.mode == "single":
+                    # Single-shot
+                    t_first = None
+                    await ws.send(json.dumps({
+                        "type": "response.create",
+                        "response_id": request_id,
+                        "input": self.text,
+                        "voice": voice,
+                        "speed": self.speed,
+                    }))
+                    t_start_tx = time.time()
+                    while True:
                         try:
-                            chunk = __import__("base64").b64decode(b64) if isinstance(b64, str) else b""
-                        except Exception:
-                            chunk = b""
-                        if t_first is None and not _is_primer_chunk(chunk):
-                            t_first = time.time()
-                            ttfb_ms = (t_first - t_start) * 1000
-                            self.ttfb_times.append(ttfb_ms)
-                        continue
-                    if data.get("type") == "response.error" and data.get("response") == request_id:
-                        code = data.get("code")
-                        if code == "busy":
-                            self.rejected += 1
-                            was_rejected = True
-                        else:
+                            msg = await asyncio.wait_for(ws.recv(), timeout=30)
+                        except asyncio.TimeoutError:
                             self.failed += 1
-                        break
-                    if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == request_id:
-                        if data.get("type") == "response.completed":
+                            break
+                        try:
+                            data = json.loads(msg)
+                        except Exception:
+                            continue
+                        if not isinstance(data, dict):
+                            continue
+                        if data.get("type") == "response.output_audio.delta" and data.get("response") == request_id:
+                            b64 = data.get("delta") or ""
+                            try:
+                                chunk = __import__("base64").b64decode(b64) if isinstance(b64, str) else b""
+                            except Exception:
+                                chunk = b""
+                            if t_first is None and not _is_primer_chunk(chunk):
+                                t_first = time.time()
+                                self.ttfb_times.append((t_first - t_start_tx) * 1000)
+                            continue
+                        if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == request_id:
                             self.successful += 1
-                            was_successful = True
-                        break
+                            break
+                else:
+                    # Sentence-by-sentence mode
+                    ok_all = True
+                    sentences = _split_sentences(self.text)
+                    per_sentence_ttfb: List[float] = []
+                    for sent in sentences:
+                        rid = f"req-{uuid.uuid4().hex[:8]}"
+                        t0 = time.time()
+                        t_first = None
+                        await ws.send(json.dumps({
+                            "type": "response.create",
+                            "response_id": rid,
+                            "input": sent,
+                            "voice": voice,
+                            "speed": self.speed,
+                        }))
+                        while True:
+                            try:
+                                msg = await asyncio.wait_for(ws.recv(), timeout=30)
+                            except asyncio.TimeoutError:
+                                ok_all = False
+                                break
+                            try:
+                                data = json.loads(msg)
+                            except Exception:
+                                continue
+                            if not isinstance(data, dict):
+                                continue
+                            if data.get("type") == "response.output_audio.delta" and data.get("response") == rid:
+                                b64 = data.get("delta") or ""
+                                try:
+                                    chunk = __import__("base64").b64decode(b64) if isinstance(b64, str) else b""
+                                except Exception:
+                                    chunk = b""
+                                if t_first is None and not _is_primer_chunk(chunk):
+                                    t_first = time.time()
+                                    per_sentence_ttfb.append((t_first - t0) * 1000)
+                                continue
+                            if data.get("type") == "response.error" and data.get("response") == rid:
+                                ok_all = False
+                                break
+                            if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == rid:
+                                break
+                    if ok_all:
+                        self.successful += 1
+                        if per_sentence_ttfb:
+                            self.ttfb_times.append(sum(per_sentence_ttfb)/len(per_sentence_ttfb))
+                    else:
+                        self.failed += 1
                 
             # End session
             await ws.send(json.dumps({"type": "session.end"}))
@@ -175,7 +225,7 @@ class TPMWorker:
             "ttfb_times": self.ttfb_times,
         }
 
-async def run_tpm_test(base_url: str, text: str, concurrency: int, speed: float, duration_s: float) -> None:
+async def run_tpm_test(base_url: str, text: str, concurrency: int, speed: float, duration_s: float, mode: str) -> None:
     """Run TPM test with specified concurrency for duration_s seconds."""
     api_key = os.getenv("API_KEY", "")
     qs = f"?api_key={api_key}" if api_key else ""
@@ -199,7 +249,8 @@ async def run_tpm_test(base_url: str, text: str, concurrency: int, speed: float,
             text=text,
             voice_cycle=voice_cycle,
             speed=speed,
-            duration_s=duration_s
+            duration_s=duration_s,
+            mode=mode,
         )
         workers.append(worker)
     
@@ -263,6 +314,8 @@ def main() -> None:
     parser.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
     parser.add_argument("--speed", type=float, default=1.0, 
                        help="Speech speed multiplier (0.5-2.0, default: 1.0)")
+    parser.add_argument("--mode", choices=["single","sentences"], default="single",
+                       help="Send full text at once (single) or sentence-by-sentence (sentences)")
     
     args = parser.parse_args()
     
@@ -280,7 +333,8 @@ def main() -> None:
             text_to_use, 
             args.concurrency, 
             args.speed, 
-            args.duration
+            args.duration,
+            args.mode,
         ))
     except KeyboardInterrupt:
         print("\nInterrupted by user")

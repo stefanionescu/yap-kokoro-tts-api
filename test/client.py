@@ -28,6 +28,7 @@ import uuid
 import shutil
 import subprocess
 from urllib.parse import urlsplit
+import re
 
 from dotenv import load_dotenv
 
@@ -120,7 +121,22 @@ def _is_runpod_proxy_host(host: str) -> bool:
     return ("proxy.runpod.net" in h) or h.endswith("runpod.net")
 
 
-async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_path: str, out_format: str, use_tls: bool = False, speed: float = 1.4) -> int:
+def _split_sentences(text: str) -> list[str]:
+    if not isinstance(text, str) or not text.strip():
+        return []
+    # Simple sentence splitter
+    pattern = re.compile(r"(?<!\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St)\.)[.!?]\s+")
+    parts = []
+    start = 0
+    for m in pattern.finditer(text):
+        parts.append(text[start:m.end()].strip())
+        start = m.end()
+    tail = text[start:].strip()
+    if tail:
+        parts.append(tail)
+    return [p for p in parts if p]
+
+async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_path: str, out_format: str, use_tls: bool = False, speed: float = 1.4, mode: str = "single") -> int:
     """OpenAI Realtime WS: session.update → response.create → response.output_audio.delta (b64) → response.completed.
 
     Decodes base64 PCM deltas and saves via ffmpeg (wav/ogg/mp3) or raw PCM.
@@ -149,10 +165,8 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
             return 2
         proc = subprocess.Popen(build_ffmpeg_cmd(out_path, out_format, speed), stdin=subprocess.PIPE)
 
-    t0 = time.time()
-    first = True
+    ttfb_values: list[float] = []
     total = 0
-    
     print(f"Connecting to {ws_url} with speed={speed:.1f}x (tempo correction: {1.0/speed:.3f}x)")
 
     async with websockets.connect(ws_url, max_size=None) as ws:
@@ -174,46 +188,90 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
             if isinstance(d, dict) and d.get("type") == "session.updated":
                 break
 
-        # Create response
-        await ws.send(json.dumps({
-            "type": "response.create",
-            "response_id": request_id,
-            "input": text,
-            "voice": voice,
-            "speed": speed,
-        }))
-
-        while True:
-            msg = await ws.recv()
-            try:
-                data = json.loads(msg)
-            except Exception:
-                continue
-            if not isinstance(data, dict):
-                continue
-            msg_type = data.get("type")
-            # Stream audio deltas
-            if msg_type == "response.output_audio.delta" and data.get("response") == request_id:
-                b64 = data.get("delta") or ""
+        if mode == "single":
+            t0 = time.time()
+            first = True
+            # Create response
+            await ws.send(json.dumps({
+                "type": "response.create",
+                "response_id": request_id,
+                "input": text,
+                "voice": voice,
+                "speed": speed,
+            }))
+            while True:
+                msg = await ws.recv()
                 try:
-                    import base64 as _b64
-                    chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                    data = json.loads(msg)
                 except Exception:
-                    chunk = b""
-                if first and _is_primer_chunk(chunk):
                     continue
-                if first:
-                    print(f"TTFB: {1000*(time.time()-t0):.0f}ms")
-                    first = False
-                total += len(chunk)
-                if file_handle is not None:
-                    file_handle.write(chunk)
-                elif proc and proc.stdin:
-                    proc.stdin.write(chunk)
-                continue
-            # Completion
-            if msg_type in ("response.completed", "response.canceled") and data.get("response") == request_id:
-                break
+                if not isinstance(data, dict):
+                    continue
+                msg_type = data.get("type")
+                if msg_type == "response.output_audio.delta" and data.get("response") == request_id:
+                    b64 = data.get("delta") or ""
+                    try:
+                        import base64 as _b64
+                        chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                    except Exception:
+                        chunk = b""
+                    if first and _is_primer_chunk(chunk):
+                        continue
+                    if first:
+                        ttfb_values.append(1000*(time.time()-t0))
+                        print(f"TTFB: {ttfb_values[-1]:.0f}ms")
+                        first = False
+                    total += len(chunk)
+                    if file_handle is not None:
+                        file_handle.write(chunk)
+                    elif proc and proc.stdin:
+                        proc.stdin.write(chunk)
+                    continue
+                if msg_type in ("response.completed", "response.canceled") and data.get("response") == request_id:
+                    break
+        else:
+            # sentence-by-sentence
+            sentences = _split_sentences(text)
+            for sent in sentences:
+                rid = f"req-{uuid.uuid4().hex[:8]}"
+                t0 = time.time()
+                first = True
+                await ws.send(json.dumps({
+                    "type": "response.create",
+                    "response_id": rid,
+                    "input": sent,
+                    "voice": voice,
+                    "speed": speed,
+                }))
+                while True:
+                    msg = await ws.recv()
+                    try:
+                        data = json.loads(msg)
+                    except Exception:
+                        continue
+                    if not isinstance(data, dict):
+                        continue
+                    msg_type = data.get("type")
+                    if msg_type == "response.output_audio.delta" and data.get("response") == rid:
+                        b64 = data.get("delta") or ""
+                        try:
+                            import base64 as _b64
+                            chunk = _b64.b64decode(b64) if isinstance(b64, str) else b""
+                        except Exception:
+                            chunk = b""
+                        if first and _is_primer_chunk(chunk):
+                            continue
+                        if first:
+                            ttfb_values.append(1000*(time.time()-t0))
+                            first = False
+                        total += len(chunk)
+                        if file_handle is not None:
+                            file_handle.write(chunk)
+                        elif proc and proc.stdin:
+                            proc.stdin.write(chunk)
+                        continue
+                    if msg_type in ("response.completed", "response.canceled") and data.get("response") == rid:
+                        break
 
     if proc and proc.stdin:
         try:
@@ -224,6 +282,9 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
     if file_handle is not None:
         file_handle.close()
 
+    if ttfb_values:
+        avg_ttfb = sum(ttfb_values)/len(ttfb_values)
+        print(f"Avg TTFB: {avg_ttfb:.0f}ms")
     print(f"Saved ~{total} bytes of PCM to {out_path}")
     return 0 if total > 0 else 3
 
@@ -245,6 +306,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
     parser.add_argument("--out", default="hello.wav", help="Output file path (wav/ogg/mp3/pcm)")
     parser.add_argument("--format", choices=["wav", "ogg", "opus", "mp3", "pcm"], default="wav", help="Output format")
+    parser.add_argument("--mode", choices=["single", "sentences"], default="single", help="Send full text at once or sentence-by-sentence")
     parser.add_argument("--speed", type=float, default=1.0, help="Speech speed multiplier (0.5-2.0, default: 1.0)")
     parser.add_argument("--tls", action="store_true", help="Use wss:// (TLS)")
     return parser.parse_args()
@@ -256,7 +318,7 @@ def main() -> None:
         norm_host, tls_from_scheme = _sanitize_host_and_scheme(args.host)
         tls_pref = args.tls or tls_from_scheme or _is_runpod_proxy_host(norm_host)
         text_to_use = SHORT_TEXT if args.short_reply else args.text
-        rc = asyncio.run(stream_ws_and_save(norm_host, args.port, args.voice, text_to_use, args.out, args.format, tls_pref, args.speed))
+        rc = asyncio.run(stream_ws_and_save(norm_host, args.port, args.voice, text_to_use, args.out, args.format, tls_pref, args.speed, args.mode))
         if rc != 0:
             sys.exit(rc)
     except KeyboardInterrupt:

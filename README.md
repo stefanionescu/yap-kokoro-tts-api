@@ -35,7 +35,7 @@ bash scripts/start.sh
     - End session: `{"type":"session.end"}`
   - Server → Client
     - `{"type":"session.updated"}` and `{"type":"response.created", "response":"uuid"}`
-    - Streaming audio: `{"type":"response.output_audio.delta", "response":"uuid", "delta":"<base64>", "mime_type":"audio/pcm;rate=24000"}`
+    - Streaming audio: `{"type":"response.output_audio.delta", "response":"uuid", "delta":"<base64>"}`
     - Completion: `{"type":"response.completed", "response":"uuid"}` or `{"type":"response.canceled", "response":"uuid"}`
 
 Notes:
@@ -56,9 +56,49 @@ By default, the client and tools read `RUNPOD_TCP_HOST` and `RUNPOD_TCP_PORT` fr
 { "type": "session.update", "session": {"voice": "female", "audio": {"format":"pcm", "sample_rate": 24000}} }
 { "type": "response.create", "response_id": "uuid-1", "input": "Okay, let's go." }
 { "type": "response.created", "response": "uuid-1" }
-{ "type": "response.output_audio.delta", "response": "uuid-1", "delta": "<base64>", "mime_type": "audio/pcm;rate=24000" }
+{ "type": "response.output_audio.delta", "response": "uuid-1", "delta": "<base64>" }
 { "type": "response.completed", "response": "uuid-1" }
 { "type": "session.end" }
+```
+
+### Examples: send full text vs sentence‑by‑sentence
+
+All tools support both modes where applicable.
+
+#### test/client.py
+```bash
+# Full text in one request
+python test/client.py --voice female --text "Hello there. This is a demo." --out hello.wav --mode single
+
+# Sentence‑by‑sentence (each sentence as its own request)
+python test/client.py --voice female --text "Hello there. This is a demo." --out hello.wav --mode sentences
+```
+
+#### test/bench.py
+```bash
+# Full text per request
+python test/bench.py --n 40 --concurrency 3 --mode single
+
+# Sentence‑by‑sentence per request (averages TTFB across sentences)
+python test/bench.py --n 40 --concurrency 3 --mode sentences
+```
+
+#### test/warmup.py
+```bash
+# Full text per request
+python test/warmup.py --mode single
+
+# Sentence‑by‑sentence per request
+python test/warmup.py --mode sentences
+```
+
+#### test/tpm.py
+```bash
+# Full text per transaction (TX counted when the single request completes)
+python test/tpm.py --mode single
+
+# Sentence‑by‑sentence per transaction (TX counted when all sentences complete)
+python test/tpm.py --mode sentences --duration 120
 ```
 
 ### Voices
