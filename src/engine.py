@@ -275,10 +275,11 @@ class KokoroEngine:
 
     async def _synthesize_stream_pieces(self, pieces: List[str], voice: str, output_format: str, speed: Optional[float] = None, request_id: Optional[str] = None) -> AsyncGenerator[bytes, None]:
         selected_voice = voice or "female"
-        
-        # Only validate that voice is not empty - let Kokoro handle invalid voices
-        # This allows server-side custom voices that aren't in local registry
-        if not selected_voice or selected_voice.strip() == "":
+        # Allow direct Kokoro IDs like af_aoede/am_michael without forcing fallback
+        if (
+            selected_voice not in self.available_voices
+            and not str(selected_voice).startswith(("af_", "am_"))
+        ):
             selected_voice = "female"
 
         # Map API voice to Kokoro voice string (built-in or custom recipe)
@@ -295,7 +296,7 @@ class KokoroEngine:
         def pipeline_for(piece: str):
             # Use per-request speed if provided, otherwise engine default
             eff_speed = float(speed if speed is not None else self.speed)
-            # Try the requested voice - if it fails, raise an error (no silent fallbacks)
+            # Try common Kokoro voice IDs if mapping fails silently
             try:
                 return self.pipeline(
                     piece,
@@ -304,19 +305,14 @@ class KokoroEngine:
                     split_pattern=self.split_pattern,
                 )
             except Exception as e:
-                # Only fallback for built-in voices (female/male), not custom ones
-                if selected_voice in ["female", "male"]:
-                    alt_voice = {"female": "af_aoede", "male": "am_michael"}[selected_voice]
-                    logger.warning("primary voice '%s' failed: %s; retrying with '%s'", kokoro_voice, e, alt_voice)
-                    return self.pipeline(
-                        piece,
-                        voice=alt_voice,
-                        speed=eff_speed,
-                        split_pattern=self.split_pattern,
-                    )
-                else:
-                    # For custom/direct voices, fail immediately with clear error
-                    raise ValueError(f"Voice '{selected_voice}' (mapped to '{kokoro_voice}') is not available: {e}")
+                alt_voice = {"female": "af_aoede", "male": "am_michael"}.get(selected_voice, kokoro_voice)
+                logger.warning("primary voice '%s' failed: %s; retrying with '%s'", kokoro_voice, e, alt_voice)
+                return self.pipeline(
+                    piece,
+                    voice=alt_voice,
+                    speed=eff_speed,
+                    split_pattern=self.split_pattern,
+                )
 
         if output_format == "pcm":
             for piece in pieces:

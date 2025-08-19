@@ -63,7 +63,7 @@ def _is_primer_chunk(b: bytes) -> bool:
         prime_bytes = 512
     return len(b) <= prime_bytes and not any(b)
 
-async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool, speed: float):
+async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bool):
     api_key = os.getenv("API_KEY", "")
     qs = f"?api_key={api_key}" if api_key else ""
     ws_url = base_url.replace("http://", "ws://").replace("https://", "wss://") + "/v1/audio/speech/stream/ws" + qs
@@ -96,7 +96,6 @@ async def _ws_measure_async(base_url: str, text: str, voice: str, save_audio: bo
             "request_id": request_id,
             "text": text,
             "voice": voice,
-            "speed": speed,
         }))
         t0 = time.time()
 
@@ -155,7 +154,7 @@ async def _ws_ready_check(base_url: str, voice: str) -> bool:
         logger.error(f"WS readiness check failed: {e}")
         return False
 
-def warmup_api(host="localhost", port=8000, save_audio=False, short_reply: bool = False, speed: float = 1.0):
+def warmup_api(host="localhost", port=8000, save_audio=False, short_reply: bool = False):
     """Send warmup requests to the API (WS-only)."""
     base_url = f"http://{host}:{port}"
     
@@ -188,9 +187,9 @@ def warmup_api(host="localhost", port=8000, save_audio=False, short_reply: bool 
         test_text = SHORT_TEXT
 
     for voice in ["female", "male"]:
-        logger.info(f"[WS] {voice}: starting… (speed={speed:.2f}x)")
+        logger.info(f"[WS] {voice}: starting…")
         try:
-            ws_m = asyncio.run(_ws_measure_async(base_url, test_text, voice, save_audio, speed))
+            ws_m = asyncio.run(_ws_measure_async(base_url, test_text, voice, save_audio))
             logger.info(_format_metrics(f"WS   {voice}", ws_m))
         except Exception as e:
             logger.error(f"[WS] Error for voice '{voice}': {e}")
@@ -204,7 +203,6 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=int(os.getenv("RUNPOD_TCP_PORT", "8000")), help="API port (default: RUNPOD_TCP_PORT or 8000)")
     parser.add_argument("--save", action="store_true", help="Save generated audio files")
     parser.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
-    parser.add_argument("--speed", type=float, default=1.0, help="Speech speed multiplier (0.5-2.0, default: 1.0)")
     
     args = parser.parse_args()
-    warmup_api(args.host, args.port, args.save, args.short_reply, args.speed)
+    warmup_api(args.host, args.port, args.save, args.short_reply)
