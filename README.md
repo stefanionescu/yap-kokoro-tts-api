@@ -197,9 +197,9 @@ python test/bench.py --n 60 --concurrency 4
 - Each request writes JSON to `logs/metrics.log`: `ts`, `request_id`, `ttfb_ms`, `wall_s`, `audio_s`, `rtf`, `xrt`, `kbps`, `canceled`.
 - Print rolling summaries:
 ```bash
-source venv/bin/activate && python src/metrics.py
+source venv/bin/activate && python -m src.metrics
 # Custom windows
-python src/metrics.py --periods "30m,1h,6h,24h,3d"
+python -m src.metrics --periods "30m,1h,6h,24h,3d"
 ```
 
 ### Purge / reset the pod

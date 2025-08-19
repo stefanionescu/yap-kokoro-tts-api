@@ -57,7 +57,7 @@ if [ -n "${KOKORO_DEVICE:-}" ]; then
   echo "Forcing Kokoro device: $KOKORO_DEVICE"
 fi
 if [ -n "${KOKORO_GPU_MEMORY_FRACTION:-}" ]; then
-  echo "Per-process GPU memory fraction: $KOKORO_GPU_MEMORY_FRACTION"
+  echo "TTS max GPU memory fraction: $KOKORO_GPU_MEMORY_FRACTION"
 fi
 
 # CUDA allocator tuning to reduce fragmentation and improve long uptimes

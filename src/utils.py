@@ -1,8 +1,8 @@
 """
-Utility functions for text processing shared by test scripts.
+Lightweight text utilities for server-side processing.
 
-This module is intentionally dependency-free and safe to import from scripts
-run directly (adds no side-effects, no environment changes).
+Currently includes a real-time friendly sentence splitter used to
+classify metrics as per-sentence vs block.
 """
 
 from typing import List
@@ -14,9 +14,6 @@ def split_sentences(text: str) -> List[str]:
     - Ends on a single '.' that is not part of an ellipsis '...'
     - Includes any trailing quotes/brackets immediately after the end mark
     - Skips whitespace after a sentence end
-
-    This avoids heavy regexes (and look-behinds) to work reliably across
-    Python builds and environments.
     """
     if not isinstance(text, str):
         return []
