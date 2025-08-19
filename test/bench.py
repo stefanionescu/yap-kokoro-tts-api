@@ -193,7 +193,8 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
                 ttfb_vals: List[float] = []
                 bytes_total = 0
                 wall_start = time.time()
-                for sent in sentences:
+                total_sents = len(sentences)
+                for si, sent in enumerate(sentences):
                     rid = f"req-{uuid.uuid4().hex[:8]}"
                     t0 = None
                     t_first = None
@@ -226,9 +227,11 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
                             if t_first is None:
                                 t_first = time.time()
                                 ttfb_vals.append((t_first - t0) * 1000.0)
+                                print(f"    Worker {worker_id}: [sent {si+1}/{total_sents}] First chunk after {(t_first - t0) * 1000:.2f}ms")
                             sent_bytes += len(chunk)
                             continue
                         if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == rid:
+                            print(f"    Worker {worker_id}: [sent {si+1}/{total_sents}] bytes={sent_bytes}")
                             break
                     bytes_total += sent_bytes
                 wall_end = time.time()
