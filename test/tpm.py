@@ -225,6 +225,7 @@ async def run_tpm_test(base_url: str, text: str, concurrency: int, speed: float,
     print(f"  Concurrency: {concurrency}")
     print(f"  Text length: {len(text)} chars")
     print(f"  Speed: {speed}x")
+    print(f"  Mode: {mode}")
     print(f"  URL: {ws_url}")
     print()
     

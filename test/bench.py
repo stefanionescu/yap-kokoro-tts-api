@@ -231,7 +231,6 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
                             sent_bytes += len(chunk)
                             continue
                         if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == rid:
-                            print(f"    Worker {worker_id}: [sent {si+1}/{total_sents}] bytes={sent_bytes}")
                             break
                     bytes_total += sent_bytes
                 wall_end = time.time()

@@ -269,7 +269,7 @@ async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_pa
     if file_handle is not None:
         file_handle.close()
 
-    if ttfb_values:
+    if mode == "sentences" and ttfb_values:
         avg_ttfb = sum(ttfb_values)/len(ttfb_values)
         print(f"Avg TTFB: {avg_ttfb:.0f}ms")
     print(f"Saved ~{total} bytes of PCM to {out_path}")
