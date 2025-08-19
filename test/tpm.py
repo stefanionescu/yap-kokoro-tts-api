@@ -22,7 +22,6 @@ import statistics as stats
 from typing import Dict, List
 import os
 from dotenv import load_dotenv
-
 import websockets
 from utils import split_sentences
 
