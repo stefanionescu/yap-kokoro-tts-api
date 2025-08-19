@@ -218,6 +218,13 @@ async def tts_stream_ws(websocket: WebSocket):
                     "request_id": req_id,
                     "duration_s": total_samples / 24000.0,
                 })
+        except ValueError as e:
+            if "Voice" in str(e) and "not found" in str(e):
+                logger.warning("WebSocket: invalid voice for %s: %s", req_id, e)
+                await send_json_safe({"type": "error", "request_id": req_id, "code": "invalid_voice", "message": str(e)})
+            else:
+                logger.exception("WebSocket: value error in stream_one(%s): %s", req_id, e)
+                await send_json_safe({"type": "error", "request_id": req_id, "code": "stream_error", "message": str(e)})
         except Exception as e:
             logger.exception("WebSocket: error in stream_one(%s): %s", req_id, e)
             await send_json_safe({"type": "error", "request_id": req_id, "code": "stream_error", "message": str(e)})

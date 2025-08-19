@@ -143,9 +143,11 @@ class KokoroEngine:
         self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", str(SCHED_DEFAULT_QUANTUM_BYTES))))
         self.active_limit = self.max_concurrent
         
-        # Admission control (SLA fields kept for future use, but we do NOT queue)
+        # Admission control (no queuing beyond running slots)
         self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", str(DEFAULT_QUEUE_WAIT_SLA_MS)))
         self.max_queued_requests = int(os.getenv("MAX_QUEUED_REQUESTS", str(DEFAULT_MAX_QUEUED_REQUESTS)))
+        # Token semaphore for active slots only (no queue). We attempt immediate acquire.
+        self._admission_semaphore: asyncio.Semaphore = asyncio.Semaphore(self.active_limit)
 
         # Cancellation registry per request_id
         self._cancel_flags: dict[str, bool] = {}
@@ -273,11 +275,10 @@ class KokoroEngine:
 
     async def _synthesize_stream_pieces(self, pieces: List[str], voice: str, output_format: str, speed: Optional[float] = None, request_id: Optional[str] = None) -> AsyncGenerator[bytes, None]:
         selected_voice = voice or "female"
-        # Allow direct Kokoro IDs like af_aoede/am_michael without forcing fallback
-        if (
-            selected_voice not in self.available_voices
-            and not str(selected_voice).startswith(("af_", "am_"))
-        ):
+        
+        # Only validate that voice is not empty - let Kokoro handle invalid voices
+        # This allows server-side custom voices that aren't in local registry
+        if not selected_voice or selected_voice.strip() == "":
             selected_voice = "female"
 
         # Map API voice to Kokoro voice string (built-in or custom recipe)
@@ -294,7 +295,7 @@ class KokoroEngine:
         def pipeline_for(piece: str):
             # Use per-request speed if provided, otherwise engine default
             eff_speed = float(speed if speed is not None else self.speed)
-            # Try common Kokoro voice IDs if mapping fails silently
+            # Try the requested voice - if it fails, raise an error (no silent fallbacks)
             try:
                 return self.pipeline(
                     piece,
@@ -303,14 +304,19 @@ class KokoroEngine:
                     split_pattern=self.split_pattern,
                 )
             except Exception as e:
-                alt_voice = {"female": "af_aoede", "male": "am_michael"}.get(selected_voice, kokoro_voice)
-                logger.warning("primary voice '%s' failed: %s; retrying with '%s'", kokoro_voice, e, alt_voice)
-                return self.pipeline(
-                    piece,
-                    voice=alt_voice,
-                    speed=eff_speed,
-                    split_pattern=self.split_pattern,
-                )
+                # Only fallback for built-in voices (female/male), not custom ones
+                if selected_voice in ["female", "male"]:
+                    alt_voice = {"female": "af_aoede", "male": "am_michael"}[selected_voice]
+                    logger.warning("primary voice '%s' failed: %s; retrying with '%s'", kokoro_voice, e, alt_voice)
+                    return self.pipeline(
+                        piece,
+                        voice=alt_voice,
+                        speed=eff_speed,
+                        split_pattern=self.split_pattern,
+                    )
+                else:
+                    # For custom/direct voices, fail immediately with clear error
+                    raise ValueError(f"Voice '{selected_voice}' (mapped to '{kokoro_voice}') is not available: {e}")
 
         if output_format == "pcm":
             for piece in pieces:
@@ -409,18 +415,24 @@ class KokoroEngine:
                 proc.kill()
 
     def can_accept(self) -> bool:
-        """Non-blocking admission check: do we have capacity to start immediately?"""
-        return self._inflight_count < self.active_limit
+        """Non-blocking admission check: token available?"""
+        return getattr(self._admission_semaphore, "_value", 0) > 0
 
     def try_accept_request(self) -> bool:
-        """Non-blocking: admit only if a running slot is free (no queue)."""
-        return self._inflight_count < self.active_limit
+        """Non-blocking: admit only if a running slot token is available."""
+        return self.can_accept()
 
     async def try_accept_request_async(self) -> bool:
-        """Admit only if a running slot is free (no queue)."""
-        return self._inflight_count < self.active_limit
+        """Immediate token acquire; return False if none (no queue)."""
+        try:
+            await asyncio.wait_for(self._admission_semaphore.acquire(), timeout=0.0)
+            return True
+        except asyncio.TimeoutError:
+            return False
 
     def release_accept_slot(self) -> None:
+        with contextlib.suppress(Exception):
+            self._admission_semaphore.release()
         self._accepted_slots = max(0, self._accepted_slots - 1)
 
     def record_job_wall_ms(self, wall_ms: float) -> None:
