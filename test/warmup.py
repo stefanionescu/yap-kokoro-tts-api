@@ -212,4 +212,4 @@ if __name__ == "__main__":
     parser.add_argument("--speed", type=float, default=1.0, help="Speech speed multiplier (0.5-2.0, default: 1.0)")
     
     args = parser.parse_args()
-    warmup_api(args.host, args.port, args.save, args.short_reply, args.server_format, args.speed)
+    warmup_api(args.host, args.port, args.save, args.short_reply, args.speed)

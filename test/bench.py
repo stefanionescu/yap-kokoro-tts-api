@@ -101,7 +101,7 @@ def _is_primer_chunk(b: bytes) -> bool:
     return len(b) <= prime_bytes and not any(b)
 
 
-async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int, server_format: str, speed: float) -> dict:
+async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int, speed: float) -> dict:
     """OpenAI Realtime WS: session.update once, then multiple response.create sequentially.
 
     Returns {"results": List[metrics], "rejected": int}
@@ -116,7 +116,7 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
             "type": "session.update",
             "session": {
                 "voice": voice_cycle[0],
-                "audio": {"format": server_format, "sample_rate": SAMPLE_RATE},
+                "audio": {"format": "pcm", "sample_rate": SAMPLE_RATE},
             },
         }))
         # Wait for session.updated
@@ -195,7 +195,7 @@ def _split_counts(total: int, workers: int) -> List[int]:
     return [base + (1 if i < rem else 0) for i in range(workers)]
 
 
-async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int, server_format: str, speed: float):
+async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int, speed: float):
     """Run benchmark using persistent WS per worker; multiple speak() per connection.
 
     Returns (results: List[metrics], rejected_count: int)
@@ -203,7 +203,7 @@ async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int, 
     workers = min(concurrency, total_reqs)
     counts = _split_counts(total_reqs, workers)
     voice_cycle = ["female", "male"]
-    tasks = [asyncio.create_task(_ws_worker(base_url, text, voice_cycle, counts[i], i+1, server_format, speed)) for i in range(workers)]
+    tasks = [asyncio.create_task(_ws_worker(base_url, text, voice_cycle, counts[i], i+1, speed)) for i in range(workers)]
     results_nested = await asyncio.gather(*tasks, return_exceptions=True)
     results: List[Dict[str, float]] = []
     rejected_total = 0
