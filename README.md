@@ -240,6 +240,36 @@ Notes:
 - Default API voices: `female→af_heart`, `male→am_michael`.
 - Audio: PCM16 mono @ 24 kHz by default; Ogg/Opus with `{"format":"opus"}` if ffmpeg installed.
 
+### Performance Results
+
+Results from running on an L40S GPU Runpod pod:
+
+#### Warmup Performance (Long Text)
+```
+Female voice:
+TTFB=95.36 ms | time=0.5823s | audio=69.1500s | RTF=0.0084 | xRT=118.7491 | throughput=5566.366 KB/s
+
+Male voice:  
+TTFB=65.21 ms | time=0.5671s | audio=75.9000s | RTF=0.0075 | xRT=133.8392 | throughput=6273.710 KB/s
+```
+
+#### Benchmark Results (20 requests, concurrency=4)
+```
+== WebSocket ==n=20
+TTFB ms      | avg=199.02  p50=252.14  p95=255.16
+Wall s       | avg=2.2113
+Audio s      | avg=71.8500
+xRT          | avg=32.4841
+Throughput   | avg=1522.69 KB/s
+Rejected: 0
+WebSocket elapsed: 11.0907s
+```
+
+#### Single Client Call (Long Text, No Sentence Split)
+```
+TTFB: 116ms
+```
+
 ### References
 - Kokoro GitHub: https://github.com/hexgrad/kokoro
 - Kokoro‑82M model card: https://huggingface.co/hexgrad/Kokoro-82M
