@@ -420,11 +420,11 @@ class KokoroEngine:
 
     async def try_accept_request_async(self) -> bool:
         """Immediate token acquire; return False if none (no queue)."""
-        try:
-            await asyncio.wait_for(self._admission_semaphore.acquire(), timeout=0.0)
-            return True
-        except asyncio.TimeoutError:
+        # Non-blocking: check token count first to avoid any waiting
+        if getattr(self._admission_semaphore, "_value", 0) <= 0:  # type: ignore[attr-defined]
             return False
+        await self._admission_semaphore.acquire()
+        return True
 
     def release_accept_slot(self) -> None:
         with contextlib.suppress(Exception):
