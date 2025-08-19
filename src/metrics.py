@@ -1,7 +1,7 @@
 import json
 import time
 from typing import Dict, List, Tuple
-from constants import METRICS_LOG_PATH
+from src.constants import METRICS_LOG_PATH
 
 def log_request_metrics(metrics: Dict) -> None:
     """Append per-request metrics as a JSON line.

@@ -13,6 +13,11 @@ bash scripts/tail_bg_logs.sh
 source venv/bin/activate && python test/warmup.py --save
 ```
 
+Manual launch (alternative):
+```bash
+uvicorn src.main:app --host 0.0.0.0 --port 8000 --log-level info
+```
+
 ### Authentication (production)
 - The WebSocket endpoint requires an API key if `API_KEY` is set in `.env`.
 - `scripts/setup.sh` creates `.env` with a default `API_KEY=dev-key`.
@@ -31,7 +36,9 @@ bash scripts/start.sh
   - Client → Server
     - `{"type":"session.update", "session": {"voice":"female", "audio": {"format":"pcm", "sample_rate":24000}}}`
     - For each sentence: `{"type":"response.create", "response_id":"uuid", "input":"Okay, let's go.", "voice":"female", "speed":1.0}`
+    - Incremental input (optional): `{"type":"input.append", "text":"partial..."}` then `{"type":"input.commit"}` to flush
     - Barge‑in: `{"type":"response.cancel", "response":"uuid"}`
+    - Immediate barge for incremental mode: `{"type":"barge"}` (stops playback and clears pending input)
     - End session: `{"type":"session.end"}`
   - Server → Client
     - `{"type":"session.updated"}` and `{"type":"response.created", "response":"uuid"}`
@@ -44,7 +51,7 @@ Notes:
 - Authentication: append `?api_key=YOUR_KEY` to the WS URL. Set `API_KEY` in `.env`.
 
 ### Pipecat integration
-- Use a custom WebSocket TTS service or adapt PipeCat’s OpenAI TTS service if you prefer sentence‑per‑HTTP (slightly higher latency).
+- Use a custom WebSocket TTS service or adapt Pipecat’s OpenAI TTS service if you prefer sentence‑per‑HTTP (slightly higher latency).
 - Configure PCM output at 24 kHz mono. Sentence aggregation should remain enabled in Pipecat.
 
 Minimal client example is provided in `test/client.py` and a load benchmark in `test/bench.py` using the new protocol.
@@ -60,6 +67,18 @@ By default, the client and tools read `RUNPOD_TCP_HOST` and `RUNPOD_TCP_PORT` fr
 { "type": "response.completed", "response": "uuid-1" }
 { "type": "session.end" }
 ```
+
+### Realtime incremental input (optional)
+```json
+{ "type": "session.update", "session": {"voice": "female", "audio": {"format":"pcm", "sample_rate": 24000}} }
+{ "type": "input.append", "text": "Hello there" }
+{ "type": "input.append", "text": ". This is" }
+{ "type": "input.append", "text": " a demo." }
+{ "type": "input.commit" }
+```
+Notes:
+- The server buffers small `input.append` segments and auto‑flushes after a short idle (`FLUSH_IDLE_MS`, default 160 ms), or immediately on `input.commit`.
+- Use `{"type":"barge"}` to stop current playback and clear any pending input.
 
 ### Examples: send full text vs sentence‑by‑sentence
 
@@ -106,6 +125,8 @@ python test/tpm.py --mode sentences --duration 120
 - The actual Kokoro voice IDs come from environment variables:
   - `DEFAULT_VOICE_FEMALE` (default: `af_aoede`)
   - `DEFAULT_VOICE_MALE` (default: `am_michael`)
+  
+Custom voice names are not accepted directly by the API. Map your desired Kokoro voice IDs to `DEFAULT_VOICE_FEMALE`/`DEFAULT_VOICE_MALE` in `.env`.
 
 ### Benchmark & find optimal concurrency
 ```bash

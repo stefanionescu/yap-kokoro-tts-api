@@ -5,7 +5,7 @@ import time
 import uuid as _uuid
 import os
 from src.engine import KokoroEngine
-from constants import (
+from src.constants import (
     SAMPLE_RATE,
     WS_DEFAULT_BUFFER_BYTES,
     WS_DEFAULT_FLUSH_EVERY,

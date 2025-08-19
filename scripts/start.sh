@@ -60,19 +60,6 @@ if [ -n "${KOKORO_GPU_MEMORY_FRACTION:-}" ]; then
   echo "Per-process GPU memory fraction: $KOKORO_GPU_MEMORY_FRACTION"
 fi
 
-# Export HF tokens for gated models
-if [ -n "$HUGGING_FACE_HUB_TOKEN" ]; then
-    export HUGGING_FACE_HUB_TOKEN
-elif [ -n "$HF_TOKEN" ]; then
-    export HF_TOKEN
-    export HUGGING_FACE_HUB_TOKEN="$HF_TOKEN"
-fi
-
-# Ensure HF_HOME is set to repo cache
-if [ -z "${HF_HOME:-}" ]; then
-    export HF_HOME="$ROOT_DIR/cache"
-fi
-
 # CUDA allocator tuning to reduce fragmentation and improve long uptimes
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128,garbage_collection_threshold:0.9
 
@@ -84,7 +71,7 @@ export MKL_NUM_THREADS=1
 
 if command -v setsid >/dev/null 2>&1; then
   # Launch uvicorn in a dedicated process group so we can kill the whole tree by PGID (Linux)
-  setsid bash -lc "uvicorn main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1 --http httptools --loop uvloop --ws websockets --timeout-keep-alive 120" \
+  setsid bash -lc "uvicorn src.main:app --host $HOST --port $PORT --log-level ${LOG_LEVEL,,} --workers 1 --http httptools --loop uvloop --ws websockets --timeout-keep-alive 120" \
     > server.log 2>&1 < /dev/null &
   SVR_PID=$!
   SVR_PGID=$(ps -o pgid= -p "$SVR_PID" | tr -d ' ')
@@ -93,7 +80,7 @@ if command -v setsid >/dev/null 2>&1; then
   echo "[start] server pid=$SVR_PID pgid=$SVR_PGID (logs at server.log)"
 else
   # macOS fallback without setsid
-  nohup uvicorn main:app --host "$HOST" --port "$PORT" --log-level "${LOG_LEVEL,,}" --workers 1 --http httptools --loop uvloop --ws websockets --timeout-keep-alive 120 \
+  nohup uvicorn src.main:app --host "$HOST" --port "$PORT" --log-level "${LOG_LEVEL,,}" --workers 1 --http httptools --loop uvloop --ws websockets --timeout-keep-alive 120 \
     > server.log 2>&1 &
   SVR_PID=$!
   echo "$SVR_PID" > server.pid

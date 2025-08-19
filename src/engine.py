@@ -15,7 +15,7 @@ import time
 import numpy as np
 from kokoro import KPipeline
 import torch
-from constants import (
+from src.constants import (
     SAMPLE_RATE,
     STREAM_DEFAULT_CHUNK_SECONDS,
     SCHED_DEFAULT_QUANTUM_BYTES,
