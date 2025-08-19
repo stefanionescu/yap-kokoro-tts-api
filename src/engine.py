@@ -143,7 +143,7 @@ class KokoroEngine:
         self.quantum_bytes = int(float(os.getenv("SCHED_QUANTUM_BYTES", str(SCHED_DEFAULT_QUANTUM_BYTES))))
         self.active_limit = self.max_concurrent
         
-        # Admission control
+        # Admission control (SLA fields kept for future use, but we do NOT queue)
         self.queue_wait_sla_ms = int(os.getenv("QUEUE_WAIT_SLA_MS", str(DEFAULT_QUEUE_WAIT_SLA_MS)))
         self.max_queued_requests = int(os.getenv("MAX_QUEUED_REQUESTS", str(DEFAULT_MAX_QUEUED_REQUESTS)))
 
@@ -409,58 +409,16 @@ class KokoroEngine:
                 proc.kill()
 
     def can_accept(self) -> bool:
-        """Check if we can accept a new request within SLA (conservative estimate)."""
-        # Allow queueing up to max_queued_requests beyond active_limit
-        q = self._pri_queue.qsize() + self._job_queue.qsize()
-        # Conservative predicted wait: add ~half a job duration for residual before the next slot frees
-        est_wait_ms = ((q / max(1, self.active_limit)) + 0.5) * max(1.0, self._ewma_wall_ms)
-        within_sla = est_wait_ms < self.queue_wait_sla_ms
-        within_queue_cap = q < max(0, self.max_queued_requests)
-        return within_sla and within_queue_cap and (not self._job_queue.full())
+        """Non-blocking admission check: do we have capacity to start immediately?"""
+        return self._inflight_count < self.active_limit
 
     def try_accept_request(self) -> bool:
-        """Reserve a slot (running or queued) if capacity and SLA permit.
-
-        Allows up to (active_limit + max_queued_requests) total accepted requests
-        and rejects if estimated start wait would exceed SLA.
-        """
-        # Capacity cap across running + queued
-        max_total = max(0, self.active_limit) + max(0, self.max_queued_requests)
-        if self._accepted_slots >= max_total:
-            return False
-        # Always admit up to active_limit immediately (no queue wait)
-        if self._accepted_slots < self.active_limit:
-            self._accepted_slots += 1
-            return True
-        # Beyond active_limit → queued
-        queued_est = (self._accepted_slots - self.active_limit) + self._pri_queue.qsize() + self._job_queue.qsize()
-        # Conservative wait estimate: N_per_slot + residual 0.5 job
-        est_wait_ms = ((queued_est / max(1, self.active_limit)) + 0.5) * max(1.0, self._ewma_wall_ms)
-        if est_wait_ms >= self.queue_wait_sla_ms:
-            return False
-        self._accepted_slots += 1
-        return True
+        """Non-blocking: admit only if a running slot is free (no queue)."""
+        return self._inflight_count < self.active_limit
 
     async def try_accept_request_async(self) -> bool:
-        """Atomic reservation using a dynamic queue cap derived from SLA and EWMA.
-
-        Admits up to active_limit immediately, then allows only as many queued
-        reservations as fit within SLA based on current EWMA wall time.
-        """
-        async with self._admission_lock:
-            # Always admit up to active_limit immediately
-            if self._accepted_slots < self.active_limit:
-                self._accepted_slots += 1
-                return True
-            # Compute dynamic allowed queued under SLA
-            allowed_by_sla = int((self.queue_wait_sla_ms / max(1.0, self._ewma_wall_ms)) * self.active_limit)
-            allowed_by_sla = max(0, allowed_by_sla)
-            cap = min(self.max_queued_requests, allowed_by_sla)
-            max_total = self.active_limit + cap
-            if self._accepted_slots >= max_total:
-                return False
-            self._accepted_slots += 1
-            return True
+        """Admit only if a running slot is free (no queue)."""
+        return self._inflight_count < self.active_limit
 
     def release_accept_slot(self) -> None:
         self._accepted_slots = max(0, self._accepted_slots - 1)
