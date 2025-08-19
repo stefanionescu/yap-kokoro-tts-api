@@ -36,7 +36,7 @@ LOG_LEVEL=INFO
 API_KEY=dev-key
 
 # Kokoro voice mapping
-DEFAULT_VOICE_FEMALE=af_aoede
+DEFAULT_VOICE_FEMALE=af_heart
 DEFAULT_VOICE_MALE=am_michael
 LANG_CODE=a
 KOKORO_SPEED=1.0

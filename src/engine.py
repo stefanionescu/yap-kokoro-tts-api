@@ -46,7 +46,7 @@ class KokoroEngine:
     Lightweight engine for Kokoro using the official KPipeline.
 
     - Exposes available_voices = ["female", "male"]
-    - Maps 'female' → 'aoede' and 'male' → 'michael' by default (env-overridable)
+    - Maps 'female' → 'heart' and 'male' → 'michael' by default (env-overridable)
     - Streams raw PCM16 bytes at 24 kHz (or Ogg Opus if requested and ffmpeg is available)
     - Single async worker with a job queue (one process per GPU)
     """
@@ -54,7 +54,7 @@ class KokoroEngine:
     def __init__(self, lang_code: Optional[str] = None) -> None:
         self.available_voices = ["female", "male"]
         self._voice_mapping = {
-            "female": os.getenv("DEFAULT_VOICE_FEMALE", "af_aoede"),
+            "female": os.getenv("DEFAULT_VOICE_FEMALE", "af_heart"),
             "male": os.getenv("DEFAULT_VOICE_MALE", "am_michael"),
         }
 

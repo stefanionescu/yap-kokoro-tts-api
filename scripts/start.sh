@@ -33,7 +33,7 @@ HOST=${HOST:-"0.0.0.0"}
 echo "Starting Kokoro TTS API server on $HOST:$PORT..."
 echo "Model: $MODEL_NAME"
 echo "Log level: $LOG_LEVEL"
-echo "Kokoro voices: female=${DEFAULT_VOICE_FEMALE:-aoede}, male=${DEFAULT_VOICE_MALE:-michael}"
+echo "Kokoro voices: female=${DEFAULT_VOICE_FEMALE:-heart}, male=${DEFAULT_VOICE_MALE:-michael}"
 echo "Speed: ${KOKORO_SPEED:-1.0} | Split: ${KOKORO_SPLIT_PATTERN:-\\n+} | Chunk: ${STREAM_CHUNK_SECONDS:-0.02}s"
 
 # Disable priming by default and use small chunks for fast real audio

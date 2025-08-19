@@ -80,7 +80,7 @@ async def tts_stream_ws(websocket: WebSocket):
     # Per-connection defaults and state
     # Voice mapping for API
     voice_mapping = {
-        "female": os.getenv("DEFAULT_VOICE_FEMALE", "af_aoede"),
+        "female": os.getenv("DEFAULT_VOICE_FEMALE", "af_heart"),
         "male": os.getenv("DEFAULT_VOICE_MALE", "am_michael"),
     }
     default_voice = "female"

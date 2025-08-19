@@ -123,7 +123,7 @@ python test/tpm.py --mode sentences --duration 120
 ### Voices
 - Only two logical voices are supported: `female` and `male`.
 - The actual Kokoro voice IDs come from environment variables:
-  - `DEFAULT_VOICE_FEMALE` (default: `af_aoede`)
+  - `DEFAULT_VOICE_FEMALE` (default: `af_heart`)
   - `DEFAULT_VOICE_MALE` (default: `am_michael`)
   
 Custom voice names are not accepted directly by the API. Map your desired Kokoro voice IDs to `DEFAULT_VOICE_FEMALE`/`DEFAULT_VOICE_MALE` in `.env`.
@@ -236,8 +236,8 @@ Notes:
 - We avoid wiping `/tmp` by default; pass `--clear-tmp` if you truly need it (may disrupt consoles).
 
 ### Notes
-- Voices come from Kokoro‑82M: see the official list (`af_aoede`, `am_michael`, etc.).
-- Default API voices: `female→af_aoede`, `male→am_michael`.
+- Voices come from Kokoro‑82M: see the official list (`af_heart`, `am_michael`, etc.).
+- Default API voices: `female→af_heart`, `male→am_michael`.
 - Audio: PCM16 mono @ 24 kHz by default; Ogg/Opus with `{"format":"opus"}` if ffmpeg installed.
 
 ### References
