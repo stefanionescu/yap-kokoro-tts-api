@@ -1,4 +1,4 @@
-## Kokoro TTS Deployment (OpenAI Realtime‑compatible)
+## Kokoro TTS Deployment (OpenAI Realtime Compatible)
 
 FastAPI service around Kokoro‑82M with a persistent WebSocket using an OpenAI Realtime‑compatible event schema for low‑latency sentence‑level streaming and barge‑in. Output is 24 kHz mono PCM16 (base64 in WS events).
 

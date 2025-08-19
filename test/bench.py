@@ -188,9 +188,9 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
                 t_end = time.time()
                 results.append(_metrics(total, t0 or t_end, t_first or t_end, t_end))
             else:
-                # sentences mode: aggregate metrics across sentences
+                # sentences mode: aggregate metrics across sentences (one logical request)
                 sentences = _split_sentences(text)
-                ttfb_vals = []
+                ttfb_vals: List[float] = []
                 bytes_total = 0
                 wall_start = time.time()
                 for sent in sentences:
@@ -230,11 +230,13 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
                             continue
                         if data.get("type") in ("response.completed", "response.canceled") and data.get("response") == rid:
                             break
+                    bytes_total += sent_bytes
                 wall_end = time.time()
                 # Average TTFB across sentences; total bytes across all sentences
-                avg_ttfb = sum(ttfb_vals)/len(ttfb_vals) if ttfb_vals else 0.0
-                # Reuse _metrics with aggregate window and bytes (t0 is first sentence start)
-                m = _metrics(int(sum([]) or 0) + 0, wall_start, wall_start + (avg_ttfb/1000.0), wall_end)
+                avg_ttfb = (sum(ttfb_vals) / len(ttfb_vals)) if ttfb_vals else 0.0
+                # Compute aggregate metrics: use wall_start as t0 and avg TTFB as first-chunk time
+                first_time = wall_start + (avg_ttfb / 1000.0) if avg_ttfb > 0 else wall_start
+                m = _metrics(bytes_total, wall_start, first_time, wall_end)
                 m["ttfb_ms"] = avg_ttfb
                 results.append(m)
         # end session
@@ -248,7 +250,6 @@ def _split_counts(total: int, workers: int) -> List[int]:
     base = total // workers
     rem = total % workers
     return [base + (1 if i < rem else 0) for i in range(workers)]
-
 
 async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int, speed: float, mode: str):
     """Run benchmark using persistent WS per worker; multiple speak() per connection.
