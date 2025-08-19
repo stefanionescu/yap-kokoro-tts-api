@@ -76,7 +76,33 @@ async def tts_stream_ws(websocket: WebSocket):
     logger.info("WebSocket connection open")
 
     # Per-connection defaults and state
-    default_voice = os.getenv("DEFAULT_VOICE_FEMALE", "af_aoede")
+    # Voice mapping for API
+    voice_mapping = {
+        "female": os.getenv("DEFAULT_VOICE_FEMALE", "af_aoede"),
+        "male": os.getenv("DEFAULT_VOICE_MALE", "am_michael"),
+    }
+    default_voice = "female"
+
+    def resolve_voice(requested: str) -> str:
+        """Resolve API voice name to Kokoro voice id. Raises ValueError if invalid."""
+        if not requested:
+            return voice_mapping["female"]
+        req_lower = requested.lower()
+        if req_lower in ("female", "f"):
+            return voice_mapping["female"]
+        elif req_lower in ("male", "m"):
+            return voice_mapping["male"]
+        elif requested in engine.list_custom_voices():
+            return engine.list_custom_voices()[requested]
+        elif requested in voice_mapping.values():
+            return requested
+        # Coerce common unprefixed ids
+        elif requested == "aoede":
+            return "af_aoede"
+        elif requested == "michael":
+            return "am_michael"
+        else:
+            raise ValueError(f"Voice '{requested}' not found")
     out_format = "pcm"  # wire is raw PCM16 frames
     want_timestamps = False
     send_lock = asyncio.Lock()
@@ -105,6 +131,13 @@ async def tts_stream_ws(websocket: WebSocket):
             return
         if req_id in canceled:
             await send_json_safe({"type": "canceled", "request_id": req_id})
+            return
+
+        # Resolve voice before starting synthesis
+        try:
+            resolved_voice = resolve_voice(voice or default_voice)
+        except ValueError as e:
+            await send_json_safe({"type": "error", "code": "invalid_voice", "request_id": req_id, "message": str(e)})
             return
 
         active_request_id = req_id
@@ -169,7 +202,7 @@ async def tts_stream_ws(websocket: WebSocket):
         try:
             agen = engine.generate_speech_async(
                 prompt=text,
-                voice=voice,
+                voice=resolved_voice,
                 output_format=out_format,
                 speed=safe_speed,
                 request_id=req_id,
@@ -248,7 +281,14 @@ async def tts_stream_ws(websocket: WebSocket):
 
             msg_type = data.get("type")
             if msg_type == "start":
-                default_voice = data.get("voice") or default_voice
+                v = (data.get("voice") or "").strip()
+                if v:
+                    try:
+                        resolve_voice(v)  # validate it exists
+                        default_voice = v  # store raw for later resolution
+                    except ValueError:
+                        await send_json_safe({"type": "error", "code": "invalid_voice", "voice": v})
+                        continue
                 out_format = "pcm"
                 want_timestamps = bool(data.get("timestamps", False))
                 await send_json_safe({"type": "started", "voice": default_voice, "format": out_format, "timestamps": want_timestamps})

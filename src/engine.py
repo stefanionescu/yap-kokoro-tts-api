@@ -274,24 +274,10 @@ class KokoroEngine:
                 active.append((job, agen))
 
     async def _synthesize_stream_pieces(self, pieces: List[str], voice: str, output_format: str, speed: Optional[float] = None, request_id: Optional[str] = None) -> AsyncGenerator[bytes, None]:
-        selected_voice = voice or "female"
-        # Allow direct Kokoro IDs like af_aoede/am_michael without forcing fallback
-        if (
-            selected_voice not in self.available_voices
-            and not str(selected_voice).startswith(("af_", "am_"))
-        ):
-            selected_voice = "female"
-
-        # Map API voice to Kokoro voice string (built-in or custom recipe)
-        if selected_voice in self._custom_voices:
-            kokoro_voice = self._custom_voices[selected_voice]
-        else:
-            kokoro_voice = self._voice_mapping.get(selected_voice, selected_voice)
-        # guard against legacy unprefixed IDs in env
-        if kokoro_voice == "aoede":
-            kokoro_voice = "af_aoede"
-        if kokoro_voice == "michael":
-            kokoro_voice = "am_michael"
+        # Voice is already resolved by main.py; use as-is (should be a valid Kokoro voice id or custom recipe)
+        if not voice:
+            raise ValueError("Voice must be provided (main.py should have resolved it)")
+        kokoro_voice = voice
 
         def pipeline_for(piece: str):
             # Use per-request speed if provided, otherwise engine default
@@ -305,14 +291,9 @@ class KokoroEngine:
                     split_pattern=self.split_pattern,
                 )
             except Exception as e:
-                alt_voice = {"female": "af_aoede", "male": "am_michael"}.get(selected_voice, kokoro_voice)
-                logger.warning("primary voice '%s' failed: %s; retrying with '%s'", kokoro_voice, e, alt_voice)
-                return self.pipeline(
-                    piece,
-                    voice=alt_voice,
-                    speed=eff_speed,
-                    split_pattern=self.split_pattern,
-                )
+                # No fallback - voice should have been validated by main.py
+                logger.error("Voice '%s' failed and no fallback available: %s", kokoro_voice, e)
+                raise
 
         if output_format == "pcm":
             for piece in pieces:
@@ -573,9 +554,11 @@ class KokoroEngine:
         # Register request for cancellation tracking
         self.register_request(request_id)
         # IMPORTANT: enqueue as a single job to avoid RR interleaving across segments
+        if not voice:
+            raise ValueError("Voice must be provided (should be resolved by caller)")
         await self._pri_queue.put(_TTSJob(
             pieces=pieces,
-            voice=voice or "female",
+            voice=voice,
             output_format=output_format,
             out_queue=out_q,
             end_stream=True,

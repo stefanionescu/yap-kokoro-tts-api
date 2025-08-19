@@ -101,7 +101,7 @@ def _is_primer_chunk(b: bytes) -> bool:
     return len(b) <= prime_bytes and not any(b)
 
 
-async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int) -> dict:
+async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_count: int, worker_id: int, server_format: str, speed: float) -> dict:
     """Open one WS and send multiple speak() calls sequentially to simulate Pipecat.
 
     Returns {"results": List[metrics], "rejected": int}
@@ -115,7 +115,7 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
         await ws.send(json.dumps({
             "type": "start",
             "voice": voice_cycle[0],
-            "format": "pcm",
+            "format": server_format,
             "sample_rate": SAMPLE_RATE,
         }))
         # Wait for started
@@ -143,6 +143,7 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
                 "request_id": request_id,
                 "text": text,
                 "voice": voice,
+                "speed": speed,
             }))
             t0 = time.time()
             while True:
@@ -187,7 +188,7 @@ def _split_counts(total: int, workers: int) -> List[int]:
     return [base + (1 if i < rem else 0) for i in range(workers)]
 
 
-async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int):
+async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int, server_format: str, speed: float):
     """Run benchmark using persistent WS per worker; multiple speak() per connection.
 
     Returns (results: List[metrics], rejected_count: int)
@@ -195,7 +196,7 @@ async def bench_ws(base_url: str, text: str, total_reqs: int, concurrency: int):
     workers = min(concurrency, total_reqs)
     counts = _split_counts(total_reqs, workers)
     voice_cycle = ["female", "male"]
-    tasks = [asyncio.create_task(_ws_worker(base_url, text, voice_cycle, counts[i], i+1)) for i in range(workers)]
+    tasks = [asyncio.create_task(_ws_worker(base_url, text, voice_cycle, counts[i], i+1, server_format, speed)) for i in range(workers)]
     results_nested = await asyncio.gather(*tasks, return_exceptions=True)
     results: List[Dict[str, float]] = []
     rejected_total = 0
@@ -216,6 +217,8 @@ def main() -> None:
     ap.add_argument("--concurrency", type=int, default=12)
     ap.add_argument("--text", default=DEFAULT_TEXT)
     ap.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
+    ap.add_argument("--server-format", choices=["pcm", "opus"], default="pcm", help="Server audio format (pcm or opus)")
+    ap.add_argument("--speed", type=float, default=1.0, help="Speech speed multiplier (0.5-2.0, default: 1.0)")
     args = ap.parse_args()
 
     base_url = f"http://{args.host}:{args.port}"
@@ -225,7 +228,7 @@ def main() -> None:
     print(f"Text preview: {text_to_use[:100]}...")
 
     t0 = time.time()
-    ws_res, rejected = asyncio.run(bench_ws(base_url, text_to_use, args.n, args.concurrency))
+    ws_res, rejected = asyncio.run(bench_ws(base_url, text_to_use, args.n, args.concurrency, args.server_format, args.speed))
     summarize("WebSocket", ws_res)
     print(f"Rejected: {rejected}")
     print(f"WebSocket elapsed: {time.time()-t0:.2f}s")
