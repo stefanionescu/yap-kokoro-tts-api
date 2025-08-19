@@ -85,27 +85,16 @@ async def tts_stream_ws(websocket: WebSocket):
     default_voice = "female"
 
     def resolve_voice(requested: str) -> str:
-        """Resolve API voice name to Kokoro voice id. Raises ValueError if invalid."""
+        """Resolve API voice name to Kokoro voice id. Only 'female' and 'male' are allowed."""
         if not requested:
             return voice_mapping["female"]
         req_lower = requested.lower()
         if req_lower in ("female", "f"):
             return voice_mapping["female"]
-        elif req_lower in ("male", "m"):
+        if req_lower in ("male", "m"):
             return voice_mapping["male"]
-        elif requested in engine.list_custom_voices():
-            return engine.list_custom_voices()[requested]
-        elif requested in voice_mapping.values():
-            return requested
-        # Coerce common unprefixed ids
-        elif requested == "aoede":
-            return "af_aoede"
-        elif requested == "michael":
-            return "am_michael"
-        else:
-            raise ValueError(f"Voice '{requested}' not found")
+        raise ValueError(f"Voice '{requested}' not found (allowed: female, male)")
     out_format = "pcm"  # wire is raw PCM16 frames
-    # timestamps not used in OpenAI mode
     send_lock = asyncio.Lock()
     job_queue: asyncio.Queue[dict] = asyncio.Queue()
     canceled: set[str] = set()
@@ -113,11 +102,7 @@ async def tts_stream_ws(websocket: WebSocket):
     closing = False
     max_utterance_words = int(os.getenv("MAX_UTTERANCE_WORDS", str(MAX_UTTERANCE_WORDS_DEFAULT)))
 
-    oa_session = {
-        "voice": default_voice,
-        "audio_format": "pcm",
-        "sample_rate": SAMPLE_RATE,
-    }
+    # no per-connection state beyond defaults required by the protocol
 
     async def send_json_safe(obj: dict) -> None:
         try:
@@ -191,7 +176,6 @@ async def tts_stream_ws(websocket: WebSocket):
                     "type": "response.output_audio.delta",
                     "response": response_id or req_id,
                     "delta": b64,
-                    "mime_type": f"audio/pcm;rate={SAMPLE_RATE}",
                 }
                 async with send_lock:
                     await asyncio.wait_for(websocket.send_json(event), timeout=SEND_TIMEOUT)
@@ -313,14 +297,11 @@ async def tts_stream_ws(websocket: WebSocket):
                         await send_json_safe({"type": "response.error", "code": "invalid_voice", "message": str(voice_val)})
                         continue
                     out_format = "pcm"
-                    oa_session["voice"] = default_voice
-                    oa_session["audio_format"] = out_format
-                    oa_session["sample_rate"] = int(sr_val) if isinstance(sr_val, (int, float)) else SAMPLE_RATE
                     await send_json_safe({
                         "type": "session.updated",
                         "session": {
                             "voice": default_voice,
-                            "audio": {"format": out_format, "sample_rate": oa_session["sample_rate"]},
+                            "audio": {"format": out_format, "sample_rate": int(sr_val) if isinstance(sr_val, (int, float)) else SAMPLE_RATE},
                         },
                     })
                 elif msg_type == "response.create":
@@ -378,7 +359,7 @@ async def tts_stream_ws(websocket: WebSocket):
                     if resp:
                         canceled.add(resp)
                         engine.cancel_request(str(resp))
-                elif msg_type in ("stop", "session.end"):
+                elif msg_type == "session.end":
                     closing = True
                     break
                 else:

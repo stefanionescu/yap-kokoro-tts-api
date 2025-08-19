@@ -61,25 +61,11 @@ By default, the client and tools read `RUNPOD_TCP_HOST` and `RUNPOD_TCP_PORT` fr
 { "type": "session.end" }
 ```
 
-### Custom voices (on‑pod only)
-- Blends are persisted in `custom_voices/custom_voices.json`.
-- Create/update a blend (recipe is `+`‑separated base voices, repeats weight the mix):
-```bash
-python voices/custom_voices.py add --name my_blend --recipe "af_aoede+af_nicole" --validate
-# 60/40 weighting (10 parts): 6× aoede, 4× nicole
-python voices/custom_voices.py add --name aoede60_nicole40 \
-  --recipe "af_aoede+af_aoede+af_aoede+af_aoede+af_aoede+af_aoede+af_nicole+af_nicole+af_nicole+af_nicole" --validate
-```
-- Use in API calls by setting `voice:"my_blend"`.
-- List/remove:
-```bash
-python voices/custom_voices.py list
-python voices/custom_voices.py remove --name my_blend
-```
-Restart the server after changes:
-```bash
-bash scripts/stop.sh || true && bash scripts/start.sh
-```
+### Voices
+- Only two logical voices are supported: `female` and `male`.
+- The actual Kokoro voice IDs come from environment variables:
+  - `DEFAULT_VOICE_FEMALE` (default: `af_aoede`)
+  - `DEFAULT_VOICE_MALE` (default: `am_michael`)
 
 ### Benchmark & find optimal concurrency
 ```bash

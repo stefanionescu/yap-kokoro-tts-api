@@ -58,13 +58,7 @@ class KokoroEngine:
             "male": os.getenv("DEFAULT_VOICE_MALE", "am_michael"),
         }
 
-        # Custom voice recipes (e.g., "my_blend": "af_aoede+am_michael").
-        # ALWAYS save/load from the fixed directory "custom_voices".
-        self.custom_dir = Path("custom_voices").resolve()
-        self.custom_dir.mkdir(parents=True, exist_ok=True)
-        self.custom_json_path = self.custom_dir / "custom_voices.json"
-        self._custom_voices: dict[str, str] = {}
-        self._load_custom_voices()
+        # Custom voices are no longer supported; only "female" and "male" via voice mapping
 
         lang = lang_code or os.getenv("LANG_CODE", "a")  # 'a' = American English
         # Device selection and optional memory cap BEFORE model init
@@ -152,43 +146,12 @@ class KokoroEngine:
         # Cancellation registry per request_id
         self._cancel_flags: dict[str, bool] = {}
 
-        # Extend available voices with custom names
+        # Set available voices (female/male only)
         self._refresh_available_voices()
 
-    def _load_custom_voices(self) -> None:
-        try:
-            if self.custom_json_path.exists():
-                self._custom_voices = json.loads(self.custom_json_path.read_text(encoding="utf-8")) or {}
-            else:
-                self._custom_voices = {}
-        except Exception:
-            self._custom_voices = {}
-
-    def _save_custom_voices(self) -> None:
-        try:
-            self.custom_json_path.write_text(json.dumps(self._custom_voices, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
-
+    # Custom voices are not supported; available voices are fixed
     def _refresh_available_voices(self) -> None:
-        names = ["female", "male"] + sorted(list(self._custom_voices.keys()))
-        self.available_voices = names
-
-    def add_custom_voice(self, name: str, recipe: str) -> None:
-        if not name or not recipe:
-            raise ValueError("name and recipe are required")
-        self._custom_voices[name] = recipe
-        self._save_custom_voices()
-        self._refresh_available_voices()
-
-    def remove_custom_voice(self, name: str) -> None:
-        if name in self._custom_voices:
-            self._custom_voices.pop(name, None)
-            self._save_custom_voices()
-            self._refresh_available_voices()
-
-    def list_custom_voices(self) -> dict[str, str]:
-        return dict(self._custom_voices)
+        self.available_voices = ["female", "male"]
 
     def start_worker(self) -> None:
         # Run exactly ONE scheduler loop; it interleaves up to self.active_limit streams.
