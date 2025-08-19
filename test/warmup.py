@@ -45,9 +45,9 @@ def _compute_metrics(total_bytes: int, t0: float, t_first: float, t_end: float):
 
 def _format_metrics(tag: str, m: dict):
     return (
-        f"[{tag}] TTFB={m['ttfb_ms']:.0f} ms | time={m['wall_s']:.2f}s | "
-        f"audio={m['audio_s']:.2f}s | RTF={m['rtf']:.2f} | xRT={m['x_realtime']:.2f} | "
-        f"throughput={m['kb_per_s']:.1f} KB/s"
+        f"[{tag}] TTFB={m['ttfb_ms']:.2f} ms | time={m['wall_s']:.4f}s | "
+        f"audio={m['audio_s']:.4f}s | RTF={m['rtf']:.4f} | xRT={m['x_realtime']:.4f} | "
+        f"throughput={m['kb_per_s']:.3f} KB/s"
     )
 
 SHORT_TEXT = (

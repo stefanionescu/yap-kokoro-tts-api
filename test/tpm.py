@@ -270,20 +270,20 @@ async def run_tpm_test(base_url: str, text: str, concurrency: int, speed: float,
     success_rate = (total_successful / total_attempts) * 100 if total_attempts > 0 else 0
     
     print(f"\n== TPM Test Results ==")
-    print(f"Duration: {actual_duration:.1f}s")
+    print(f"Duration: {actual_duration:.4f}s")
     print(f"Total attempts: {total_attempts}")
     print(f"Successful: {total_successful}")
     print(f"Failed: {total_failed}")
     print(f"Rejected (busy): {total_rejected}")
-    print(f"Success rate: {success_rate:.1f}%")
-    print(f"Transactions per minute: {tpm:.1f}")
-    print(f"Transactions per second: {tpm/60:.1f}")
+    print(f"Success rate: {success_rate:.2f}%")
+    print(f"Transactions per minute: {tpm:.2f}")
+    print(f"Transactions per second: {tpm/60:.4f}")
     
     if all_ttfb_times:
         avg_ttfb = stats.mean(all_ttfb_times)
         p50_ttfb = stats.median(all_ttfb_times)
         p95_ttfb = stats.quantiles(all_ttfb_times, n=20)[18] if len(all_ttfb_times) >= 20 else max(all_ttfb_times)
-        print(f"TTFB ms | avg={avg_ttfb:.0f}  p50={p50_ttfb:.0f}  p95={p95_ttfb:.0f}")
+        print(f"TTFB ms | avg={avg_ttfb:.2f}  p50={p50_ttfb:.2f}  p95={p95_ttfb:.2f}")
     else:
         print("No TTFB data available")
 

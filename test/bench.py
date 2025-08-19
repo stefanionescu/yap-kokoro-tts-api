@@ -86,11 +86,11 @@ def summarize(title: str, results: List[Dict[str, float]]) -> None:
         return sorted(v)[k]
     print(f"\n== {title} ==")
     print(f"n={n}")
-    print(f"TTFB ms  | avg={stats.mean(ttfb):.0f}  p50={stats.median(ttfb):.0f}  p95={p(ttfb,0.95):.0f}")
-    print(f"Wall s   | avg={stats.mean(wall):.2f}")
-    print(f"Audio s  | avg={stats.mean(audio):.2f}")
-    print(f"xRT      | avg={stats.mean(xrt):.2f}")
-    print(f"Throughput KB/s | avg={stats.mean(kbps):.0f}")
+    print(f"TTFB ms  | avg={stats.mean(ttfb):.2f}  p50={stats.median(ttfb):.2f}  p95={p(ttfb,0.95):.2f}")
+    print(f"Wall s   | avg={stats.mean(wall):.4f}")
+    print(f"Audio s  | avg={stats.mean(audio):.4f}")
+    print(f"xRT      | avg={stats.mean(xrt):.4f}")
+    print(f"Throughput KB/s | avg={stats.mean(kbps):.2f}")
 
 
 def _is_primer_chunk(b: bytes) -> bool:
@@ -167,7 +167,7 @@ async def _ws_worker(base_url: str, text: str, voice_cycle: List[str], requests_
                             continue
                         if t_first is None:
                             t_first = time.time()
-                            print(f"    Worker {worker_id}: First chunk after {(t_first - t0) * 1000:.0f}ms")
+                            print(f"    Worker {worker_id}: First chunk after {(t_first - t0) * 1000:.2f}ms")
                         total += len(chunk)
                         continue
                     if data.get("type") == "response.error" and data.get("response") == request_id:
@@ -293,7 +293,7 @@ def main() -> None:
     ws_res, rejected = asyncio.run(bench_ws(base_url, text_to_use, args.n, args.concurrency, args.speed, args.mode))
     summarize("WebSocket", ws_res)
     print(f"Rejected: {rejected}")
-    print(f"WebSocket elapsed: {time.time()-t0:.2f}s")
+    print(f"WebSocket elapsed: {time.time()-t0:.4f}s")
 
 if __name__ == "__main__":
     main()
