@@ -39,9 +39,6 @@ python test/client.py --short-reply --voice male --out response.wav
 # High-quality WAV (default)
 python test/client.py --text "Hello world" --format wav --out audio.wav
 
-# Compressed Ogg/Opus (smaller file size)
-python test/client.py --text "Hello world" --format ogg --out audio.ogg
-
 # MP3 format
 python test/client.py --text "Hello world" --format mp3 --out audio.mp3
 
@@ -104,8 +101,8 @@ python test/client.py --voice male --speed 1.2 --text "Remember to buy groceries
 # Podcast-style narration
 python test/client.py --voice female --speed 1.0 --format mp3 --text "Welcome to today's episode..." --out intro.mp3
 
-# Fast preview/testing
-python test/client.py --short-reply --speed 1.5 --format ogg --out test.ogg
+# Fast preview/testing  
+python test/client.py --short-reply --speed 1.5 --format wav --out test.wav
 ```
 
 **Note**: The client automatically reads `API_KEY`, `RUNPOD_TCP_HOST`, and `RUNPOD_TCP_PORT` from `.env` file when available.
@@ -276,11 +273,8 @@ python test/tpm.py --mode sentences --duration 120
 | `KOKORO_DEVICE` | `cuda` (if available) | Target device (`cuda:0`, `cpu`, etc.) |
 | `KOKORO_GPU_MEMORY_FRACTION` | unset | GPU memory limit (0.0-1.0) |
 
-### Audio Encoding
-| Variable | Default | Description |  
-|----------|---------|-------------|
-| `OPUS_BITRATE` | `48k` | Opus encoding bitrate |
-| `OPUS_APPLICATION` | `audio` | Opus application type (`audio`/`voip`) |
+### Audio Output
+Audio output is always PCM16 mono @ 24kHz for maximum quality and compatibility.
 
 ## 📊 Monitoring & Health
 
@@ -336,7 +330,7 @@ bash scripts/purge_pod.sh --self-remove
 - **GPU memory issues**: Set `KOKORO_GPU_MEMORY_FRACTION` (e.g., `0.8`) in `.env`
 - **High latency**: Tune `FIRST_SEGMENT_MAX_WORDS` and `STREAM_CHUNK_SECONDS`
 - **Connection issues**: Check `API_KEY` and firewall settings
-- **Audio quality**: Use WAV format for best quality, Ogg/Opus for smaller files
+- **Audio quality**: Use WAV format for best quality, MP3 for smaller files
 
 ## 📈 Performance Results
 
@@ -367,7 +361,7 @@ Performance data from L40S GPU RunPod testing:
 ✅ **OpenAI Realtime Compatible** - Drop-in WebSocket replacement  
 ✅ **Ultra-low Latency** - TTFB ~65-116ms with smart chunking  
 ✅ **High Throughput** - 32x+ real-time generation speed  
-✅ **Streaming Audio** - PCM16 @ 24kHz + Opus compression support  
+✅ **Streaming Audio** - High-quality PCM16 @ 24kHz output  
 ✅ **Fair Scheduling** - Round-robin concurrency with barge-in  
 ✅ **Production Ready** - Authentication, metrics, health checks  
 ✅ **Easy Integration** - Works with Pipecat and custom clients  

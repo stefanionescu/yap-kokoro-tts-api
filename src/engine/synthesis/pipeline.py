@@ -2,12 +2,10 @@
 
 import os
 import logging
-import shutil
 from typing import AsyncGenerator, List, Optional
 import numpy as np
 
 from ..audio.utils import float_to_pcm16_bytes, iter_pcm16_chunks
-from ..audio.encoding import opus_encode_via_ffmpeg
 
 logger = logging.getLogger(__name__)
 
@@ -118,35 +116,10 @@ class SynthesisPipeline:
                         yield pcm
             return
 
-        if output_format == "opus" and shutil.which("ffmpeg"):
-            def pcm_iter():
-                for piece in pieces:
-                    result = pipeline_for(piece)
-                    if isinstance(result, dict) or isinstance(result, np.ndarray) or isinstance(result, (bytes, bytearray)):
-                        iterator = [result]
-                    elif isinstance(result, (list, tuple)):
-                        iterator = [result]
-                    else:
-                        iterator = result
-                    for out in iterator:
-                        audio_src = None
-                        if isinstance(out, dict):
-                            audio_src = out.get("audio") or out.get("wav") or out.get("audio_np")
-                        elif isinstance(out, (list, tuple)):
-                            audio_src = out[-1] if out else None
-                        elif isinstance(out, (np.ndarray, bytes, bytearray)):
-                            audio_src = out
-                        if audio_src is None:
-                            continue
-                        for pcm_bytes in iter_pcm16_chunks(audio_src, self.stream_chunk_samples):
-                            if pcm_bytes:
-                                yield pcm_bytes
-
-            for opus_bytes in opus_encode_via_ffmpeg(pcm_iter()):
-                yield opus_bytes
-            return
-
-        logger.warning("Requested format '%s' not available; falling back to PCM", output_format)
+        # Only PCM format supported
+        if output_format != "pcm":
+            logger.warning("Only PCM format is supported; ignoring requested format '%s'", output_format)
+        
         for piece in pieces:
             for _, _, audio_np in pipeline_for(piece):
                 if request_id and request_manager and request_manager.is_canceled(request_id):

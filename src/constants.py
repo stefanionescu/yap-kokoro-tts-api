@@ -58,9 +58,7 @@ WORKER_IDLE_SLEEP_S: float = 0.001
 PROCESSOR_LOOP_SLEEP_S: float = 0.005
 JOB_QUEUE_GET_TIMEOUT_S: float = 0.05
 
-# Opus encoding defaults (only used when format="opus")
-OPUS_DEFAULT_BITRATE: str = "48k"
-OPUS_DEFAULT_APPLICATION: str = "audio"
+# Audio output is always PCM16 mono @ 24kHz
 
 # Metrics
 # JSONL sink for request metrics

@@ -71,7 +71,7 @@ else
   echo "[purge] No recorded PGID; stopping uvicorn via pkill"
   pkill -f uvicorn || true
   pkill -f "python .*main.py" || true
-  # Also kill any ffmpeg encoders we may have spawned for OPUS
+  # Clean up any spawned processes
   pkill -f ffmpeg || true
   # Kill by listening port as a last resort
   if command -v ss >/dev/null 2>&1; then

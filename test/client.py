@@ -7,15 +7,15 @@ Examples:
   python test/client.py --host <RUNPOD_PUBLIC_IP> \
     --text "Hello there" --voice female --out hello.wav --format wav
 
-  # Ogg/Opus output with custom speed
+  # MP3 output with custom speed
   python test/client.py --host <RUNPOD_PUBLIC_IP> \
-    --text "Hello there" --voice female --out hello.ogg --format ogg --speed 1.2
+    --text "Hello there" --voice female --out hello.mp3 --format mp3 --speed 1.2
 
   # Fast generation
   python test/client.py --host <RUNPOD_PUBLIC_IP> \
     --text "Hello there" --speed 2.0
 
-Requires ffmpeg for wav/ogg/mp3. If ffmpeg is unavailable and --format pcm is used,
+Requires ffmpeg for wav/mp3. If ffmpeg is unavailable and --format pcm is used,
 raw 24kHz mono PCM16 is written.
 """
 import argparse
@@ -87,19 +87,13 @@ def build_ffmpeg_cmd(output_path: str, output_format: str, speed: float = 1.4) -
             return base + ["-af", tempo_filter, "-c:a", "pcm_s16le", "-f", "wav", output_path]
         else:
             return base + ["-c:a", "pcm_s16le", "-f", "wav", output_path]
-    if output_format in {"ogg", "opus"}:
-        bitrate = os.getenv("OPUS_BITRATE", "48k")
-        application = os.getenv("OPUS_APPLICATION", "audio")
-        if tempo_filter:
-            return base + ["-af", tempo_filter, "-c:a", "libopus", "-b:a", bitrate, "-application", application, "-f", "ogg", output_path]
-        else:
-            return base + ["-c:a", "libopus", "-b:a", bitrate, "-application", application, "-f", "ogg", output_path]
+
     if output_format == "mp3":
         if tempo_filter:
             return base + ["-af", tempo_filter, "-c:a", "libmp3lame", "-b:a", os.getenv("MP3_BITRATE", "192k"), "-f", "mp3", output_path]
         else:
             return base + ["-c:a", "libmp3lame", "-b:a", os.getenv("MP3_BITRATE", "192k"), "-f", "mp3", output_path]
-    raise ValueError(f"Unsupported format for ffmpeg: {output_format}")
+    raise ValueError(f"Unsupported format for ffmpeg: {output_format} (supported: wav, mp3)")
 
 
 def _sanitize_host_and_scheme(host: str) -> tuple[str, bool]:
@@ -126,7 +120,7 @@ def _split_sentences(text: str) -> list[str]:
 async def stream_ws_and_save(host: str, port: int, voice: str, text: str, out_path: str, out_format: str, use_tls: bool = False, speed: float = 1.4, mode: str = "single") -> int:
     """OpenAI Realtime WS: session.update → response.create → response.output_audio.delta (b64) → response.completed.
 
-    Decodes base64 PCM deltas and saves via ffmpeg (wav/ogg/mp3) or raw PCM.
+    Decodes base64 PCM deltas and saves via ffmpeg (wav/mp3) or raw PCM.
     """
     norm_host, tls_from_scheme = _sanitize_host_and_scheme(host)
     force_tls = use_tls or tls_from_scheme or _is_runpod_proxy_host(norm_host)
@@ -291,8 +285,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--voice", choices=["female", "male"], default="female", help="Voice to use")
     parser.add_argument("--text", default=DEFAULT_TEXT, help="Input text to synthesize")
     parser.add_argument("--short-reply", action="store_true", help="Use a much shorter sample text")
-    parser.add_argument("--out", default="hello.wav", help="Output file path (wav/ogg/mp3/pcm)")
-    parser.add_argument("--format", choices=["wav", "ogg", "opus", "mp3", "pcm"], default="wav", help="Output format")
+    parser.add_argument("--out", default="hello.wav", help="Output file path (wav/mp3/pcm)")
+    parser.add_argument("--format", choices=["wav", "mp3", "pcm"], default="wav", help="Output format")
     parser.add_argument("--mode", choices=["single", "sentences"], default="single", help="Send full text at once or sentence-by-sentence")
     parser.add_argument("--speed", type=float, default=1.0, help="Speech speed multiplier (0.5-2.0, default: 1.0)")
     parser.add_argument("--tls", action="store_true", help="Use wss:// (TLS)")

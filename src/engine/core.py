@@ -40,7 +40,7 @@ class KokoroEngine:
 
     - Exposes available_voices = ["female", "male"]
     - Maps 'female' → 'heart' and 'male' → 'michael' by default (env-overridable)
-    - Streams raw PCM16 bytes at 24 kHz (or Ogg Opus if requested and ffmpeg is available)
+    - Streams raw PCM16 bytes at 24 kHz
     - Single async worker with a job queue (one process per GPU)
     """
 
