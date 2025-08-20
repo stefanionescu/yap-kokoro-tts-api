@@ -23,7 +23,7 @@ from typing import Dict, List
 import os
 from dotenv import load_dotenv
 import websockets
-from utils import split_sentences
+from text import split_sentences
 
 # Load .env to get MAX_CONCURRENT_JOBS and other defaults
 load_dotenv(override=True)

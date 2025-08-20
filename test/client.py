@@ -29,7 +29,7 @@ import shutil
 import subprocess
 from urllib.parse import urlsplit
 from dotenv import load_dotenv
-from utils import split_sentences
+from text import split_sentences
 
 import websockets
 

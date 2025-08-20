@@ -20,7 +20,7 @@ import uuid
 import statistics as stats
 from typing import Dict, List
 import websockets
-from utils import split_sentences
+from text import split_sentences
 import os
 from dotenv import load_dotenv
 
