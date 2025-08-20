@@ -12,7 +12,7 @@ try:
 except ImportError:
     torch = None
 
-from ...constants import SAMPLE_RATE
+from constants import SAMPLE_RATE
 
 
 class MetricsCollector:

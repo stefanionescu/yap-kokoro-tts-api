@@ -6,7 +6,7 @@ import subprocess
 import threading
 from typing import Iterable
 
-from ...constants import (
+from constants import (
     SAMPLE_RATE,
     OPUS_DEFAULT_BITRATE,
     OPUS_DEFAULT_APPLICATION,

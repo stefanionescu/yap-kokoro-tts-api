@@ -3,7 +3,7 @@
 import asyncio
 import contextlib
 import os
-from ...constants import EWMA_ALPHA
+from constants import EWMA_ALPHA
 
 
 class AdmissionControl:

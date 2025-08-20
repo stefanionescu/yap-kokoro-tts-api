@@ -10,7 +10,7 @@ from typing import AsyncGenerator, List, Optional, TYPE_CHECKING
 
 from .jobs import TTSJob
 from .admission import AdmissionControl
-from ...constants import (
+from constants import (
     PRIORITY_DEFAULT_QUANTUM_BYTES,
     WORKER_IDLE_SLEEP_S,
 )

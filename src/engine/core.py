@@ -20,7 +20,7 @@ from .scheduling.scheduler import WorkerScheduler
 from .synthesis.pipeline import SynthesisPipeline
 from .monitoring.metrics import MetricsCollector, SystemStatus
 
-from ..constants import (
+from constants import (
     SAMPLE_RATE,
     STREAM_DEFAULT_CHUNK_SECONDS,
     SCHED_DEFAULT_QUANTUM_BYTES,

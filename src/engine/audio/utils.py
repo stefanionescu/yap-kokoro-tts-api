@@ -2,7 +2,7 @@
 
 from typing import Iterable
 import numpy as np
-from ...constants import SAMPLE_RATE
+from constants import SAMPLE_RATE
 
 
 def float_to_pcm16_bytes(audio: np.ndarray) -> bytes:
