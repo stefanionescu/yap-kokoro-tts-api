@@ -103,11 +103,13 @@ def aggregate_window(records: List[Dict], window_spec: str) -> Dict[str, Dict[st
     overall_stats = _stats(sel)
     single_stats = _stats([r for r in sel if r.get("test_mode") == "single"])
     sentences_stats = _stats([r for r in sel if r.get("test_mode") == "sentences"])
+    other_stats = _stats([r for r in sel if r.get("test_mode") not in ["single", "sentences"]])
     
     return {
         "overall": overall_stats,
         "single": single_stats,
         "sentences": sentences_stats,
+        "other": other_stats,
     }
 
 def print_report(periods: List[str]) -> None:
@@ -120,10 +122,12 @@ def print_report(periods: List[str]) -> None:
         overall = buckets.get("overall", {})
         single = buckets.get("single", {})
         sentences = buckets.get("sentences", {})
+        other = buckets.get("other", {})
         
         total_count = int(overall.get('count', 0))
         single_count = int(single.get('count', 0))
         sentences_count = int(sentences.get('count', 0))
+        other_count = int(other.get('count', 0))
         
         if total_count == 0:
             print(f"\n== Last {p} ==")
@@ -131,10 +135,24 @@ def print_report(periods: List[str]) -> None:
             continue
             
         print(f"\n== Last {p} ==")
-        print(f"Total: {total_count} requests (Single: {single_count}, Sentences: {sentences_count})")
+        print(f"Total: {total_count} requests")
         
-        def _print_bucket(name: str, stats: Dict[str, float]):
+        # Show breakdown if there are different test modes
+        breakdown_parts = []
+        if single_count > 0:
+            breakdown_parts.append(f"Single: {single_count}")
+        if sentences_count > 0:
+            breakdown_parts.append(f"Sentences: {sentences_count}")  
+        if other_count > 0:
+            breakdown_parts.append(f"Other/Benchmark: {other_count}")
+            
+        if breakdown_parts:
+            print(f"  Breakdown: {', '.join(breakdown_parts)}")
+        
+        def _print_bucket(name: str, stats: Dict[str, float], show_if_zero: bool = False):
             count = int(stats.get('count', 0))
+            if count == 0 and not show_if_zero:
+                return
             if count == 0:
                 print(f"  {name}: No data")
                 return
@@ -149,9 +167,41 @@ def print_report(periods: List[str]) -> None:
             if cancel_rate > 0:
                 print(f"    Canceled: {cancel_rate:.1f}%")
         
-        _print_bucket("OVERALL", overall)
-        _print_bucket("SINGLE MODE", single)
-        _print_bucket("SENTENCES MODE", sentences)
+        # Always show overall stats
+        _print_bucket("OVERALL", overall, show_if_zero=True)
+        
+        # Only show mode-specific stats if there are multiple modes or if specifically requested
+        if len([x for x in [single_count, sentences_count, other_count] if x > 0]) > 1:
+            _print_bucket("CLIENT (single mode)", single)
+            _print_bucket("CLIENT (sentences mode)", sentences)  
+            _print_bucket("BENCHMARK/OTHER", other)
+
+def print_simple_report(periods: List[str]) -> None:
+    """Print simplified TTS performance metrics without test mode breakdown."""
+    recs = _load_records()
+    print(f"TTS Performance Report - {len(recs)} total records in {METRICS_LOG_PATH}")
+    
+    for p in periods:
+        buckets = aggregate_window(recs, p)
+        overall = buckets.get("overall", {})
+        
+        total_count = int(overall.get('count', 0))
+        
+        if total_count == 0:
+            print(f"\n== Last {p} ==")
+            print("No requests in this period")
+            continue
+            
+        print(f"\n== Last {p} == ({total_count} requests)")
+        print(f"  TTFB: {overall.get('avg_ttfb_ms', 0.0):.0f} ms")
+        print(f"  RTF: {overall.get('avg_rtf', 0.0):.2f}x")
+        print(f"  xRT: {overall.get('avg_xrt', 0.0):.2f}x realtime")
+        print(f"  Processing: {overall.get('avg_wall_s', 0.0):.2f} s")
+        print(f"  Audio: {overall.get('avg_audio_s', 0.0):.2f} s")
+        print(f"  Throughput: {overall.get('avg_kbps', 0.0):.0f} KB/s")
+        cancel_rate = overall.get('canceled_rate', 0.0) * 100
+        if cancel_rate > 0:
+            print(f"  Canceled: {cancel_rate:.1f}%")
 
 if __name__ == "__main__":
     import argparse
@@ -162,8 +212,17 @@ if __name__ == "__main__":
         default="1h,6h,12h,24h,3d",
         help="Comma-separated windows, e.g. 30m,1h,6h,24h",
     )
+    ap.add_argument(
+        "--simple",
+        action="store_true",
+        help="Show simplified report without test mode breakdown",
+    )
     args = ap.parse_args()
     periods = [p.strip() for p in args.periods.split(",") if p.strip()]
-    print_report(periods)
+    
+    if args.simple:
+        print_simple_report(periods)
+    else:
+        print_report(periods)
 
 
